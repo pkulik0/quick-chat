@@ -2,3 +2,5 @@
 .vscode
 go.work
 *.db
+*.pem
+*.key

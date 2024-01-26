@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"database/sql"
 	"flag"
 	_ "github.com/mattn/go-sqlite3"
@@ -10,33 +11,28 @@ import (
 
 type ChatServer struct {
 	Addr string
+	Cert tls.Certificate
 	db   *sql.DB
 }
 
-func NewChatServer() *ChatServer {
-	addr := flag.String("addr", ":30050", "address to serve on")
-	flag.Parse()
-
-	db, err := sql.Open("sqlite3", "file:server.db?cache?shared")
-	db.SetMaxOpenConns(1)
-	if err != nil {
-		log.Fatalf("failed to open db: %s", err)
-	}
-	if err := db.Ping(); err != nil {
-		log.Fatalf("failed to ping db: %s", err)
-	}
-
+func NewChatServer(addr string, cert tls.Certificate, db *sql.DB) *ChatServer {
 	return &ChatServer{
-		Addr: *addr,
+		Addr: addr,
+		Cert: cert,
 		db:   db,
 	}
 }
 
-func (s *ChatServer) Listen() error {
-	listener, err := net.Listen("tcp", s.Addr)
+func (s *ChatServer) Serve() error {
+	config := &tls.Config{
+		Certificates: []tls.Certificate{s.Cert},
+	}
+	listener, err := tls.Listen("tcp", s.Addr, config)
 	if err != nil {
 		return err
 	}
+	defer listener.Close()
+	log.Infof("listening on %s", s.Addr)
 
 	for {
 		conn, err := listener.Accept()
@@ -55,6 +51,10 @@ func (s *ChatServer) handleConn(conn net.Conn) {
 		buf := make([]byte, 1024)
 		n, err := conn.Read(buf)
 		if err != nil {
+			if err.Error() == "EOF" {
+				log.Infof("connection from %s closed", conn.RemoteAddr())
+				return
+			}
 			log.Errorf("failed to read from %s: %s", conn.RemoteAddr(), err)
 			return
 		}
@@ -62,11 +62,41 @@ func (s *ChatServer) handleConn(conn net.Conn) {
 	}
 }
 
+func (s *ChatServer) InitDb() error {
+	_, err := s.db.Exec("CREATE TABLE IF NOT EXISTS users (username VARCHAR(255) PRIMARY KEY, password VARCHAR(255) NOT NULL)")
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func main() {
 	log.Infof("secure-chat server started")
 
-	server := NewChatServer()
-	if err := server.Listen(); err != nil {
-		log.Fatalf("failed to listen: %s", err)
+	addr := flag.String("addr", ":30500", "address to serve on")
+	flag.Parse()
+
+	db, err := sql.Open("sqlite3", "file:server.db?cache?shared")
+	db.SetMaxOpenConns(1)
+	if err != nil {
+		log.Fatalf("failed to open db: %s", err)
+	}
+	if err := db.Ping(); err != nil {
+		log.Fatalf("failed to ping db: %s", err)
+	}
+
+	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
+	if err != nil {
+		log.Fatalf("failed to load cert: %s", err)
+	}
+
+	server := NewChatServer(*addr, cert, db)
+
+	if err := server.InitDb(); err != nil {
+		log.Fatalf("failed to initialize db: %s", err)
+	}
+
+	if err := server.Serve(); err != nil {
+		log.Fatalf("failed to serve: %s", err)
 	}
 }
