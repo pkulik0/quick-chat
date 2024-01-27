@@ -52,6 +52,18 @@ func (u *UserConn) Send(msg *common.Msg) error {
 	return nil
 }
 
+func (u *UserConn) handleAuthSuccess() error {
+	if err := u.server.registerConn(u.username, u.channel); err != nil {
+		return err
+	}
+
+	welcomeMsg := &common.Msg{
+		Type: common.MsgTypeSystem,
+		Data: fmt.Sprintf("Welcome, %s!", u.username),
+	}
+	return u.Send(welcomeMsg)
+}
+
 func (u *UserConn) handleAuth(data interface{}) error {
 	certStr, ok := data.(string)
 	if !ok {
@@ -75,18 +87,10 @@ func (u *UserConn) handleAuth(data interface{}) error {
 	}
 
 	u.username = u.cert.Subject.CommonName
-	welcomeMsg := &common.Msg{
-		Type: common.MsgTypeSystem,
-		Data: fmt.Sprintf("Welcome, %s!", u.username),
-	}
 
 	_, err = u.server.db.Exec("INSERT INTO users (username, certificate) VALUES (?, ?)", u.username, certBytes)
 	if err == nil {
-		err = u.Send(welcomeMsg)
-		if err != nil {
-			log.Errorf("failed to send welcome msg: %s", err)
-		}
-		return nil
+		return u.handleAuthSuccess()
 	}
 	if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
 		log.Errorf("failed to insert user: %s", err)
@@ -112,17 +116,7 @@ func (u *UserConn) handleAuth(data interface{}) error {
 	if !slices.Equal(certBytes, certBytesFromDb) {
 		return errors.New("username taken or invalid cert")
 	}
-
-	if err := u.server.registerConn(u.username, u.channel); err != nil {
-		return err
-	}
-
-	err = u.Send(welcomeMsg)
-	if err != nil {
-		log.Errorf("failed to send welcome msg: %s", err)
-	}
-
-	return nil
+	return u.handleAuthSuccess()
 }
 
 func (u *UserConn) handlePublic(msgPublic *common.MsgPublic) error {
