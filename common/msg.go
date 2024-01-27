@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 )
 
 type MsgType uint8
@@ -51,6 +52,28 @@ func NewMsgPublic(author string, text string, cert *tls.Certificate) (*Msg, erro
 			Signature: signature,
 		},
 	}, nil
+}
+
+func MsgPublicFromDb(author string, text string, signature []byte) *Msg {
+	return &Msg{
+		Type: MsgTypePublic,
+		Data: &MsgPublic{
+			Author:    author,
+			Text:      text,
+			Signature: signature,
+		},
+	}
+}
+
+func MsgPublicFromMsg(msg *Msg) (*MsgPublic, error) {
+	jsonData, err := json.Marshal(msg.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	var msgPublic *MsgPublic
+	err = json.Unmarshal(jsonData, &msgPublic)
+	return msgPublic, err
 }
 
 func (m *MsgPublic) Verify(cert *x509.Certificate) error {

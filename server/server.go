@@ -2,30 +2,27 @@ package main
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"database/sql"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"github.com/pkulik0/secure-chat/common"
 	log "github.com/sirupsen/logrus"
-	"net"
-	"slices"
-	"strings"
+	"sync"
 )
 
 type ChatServer struct {
 	Addr string
 	Cert tls.Certificate
 	db   *sql.DB
+
+	connections map[string]chan struct{}
+	mutex       sync.Mutex
 }
 
 func NewChatServer(addr string, cert tls.Certificate, db *sql.DB) *ChatServer {
 	return &ChatServer{
-		Addr: addr,
-		Cert: cert,
-		db:   db,
+		Addr:        addr,
+		Cert:        cert,
+		db:          db,
+		connections: make(map[string]chan struct{}),
 	}
 }
 
@@ -48,199 +45,46 @@ func (s *ChatServer) Serve() error {
 
 		log.Infof("new connection from %s", conn.RemoteAddr())
 		userConn := NewUserConn(conn, s)
-		go userConn.RunWorker()
+		go userConn.RunRecvWorker()
+		go userConn.RunSendWorker()
 	}
 }
 
-func (s *ChatServer) authenticateUser(certBytes []byte) error {
-	certObj, err := x509.ParseCertificate(certBytes)
-	if err != nil {
-		return err
-	}
+func (s *ChatServer) registerConn(username string, channel chan struct{}) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
-	log.Infof("cert subject: %+v", certObj)
+	if _, ok := s.connections[username]; ok {
+		return fmt.Errorf("user %s already connected", username)
+	}
+	s.connections[username] = channel
 	return nil
 }
 
-type UserConn struct {
-	conn   net.Conn
-	server *ChatServer
-
-	username string
-	cert     *x509.Certificate
+func (s *ChatServer) unregisterConn(username string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	delete(s.connections, username)
 }
 
-func NewUserConn(conn net.Conn, server *ChatServer) *UserConn {
-	return &UserConn{
-		conn:   conn,
-		server: server,
-	}
-}
+func (s *ChatServer) notify(username string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
-func (u *UserConn) Send(msg *common.Msg) error {
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return err
+	log.Printf("Notifying %s", username)
+	if _, ok := s.connections[username]; !ok {
+		return fmt.Errorf("user %s is not connected", username)
 	}
-
-	_, err = u.conn.Write(msgBytes)
-	if err != nil {
-		return err
-	}
-
+	s.connections[username] <- struct{}{}
 	return nil
 }
 
-func (u *UserConn) handleAuth(data interface{}) error {
-	certStr, ok := data.(string)
-	if !ok {
-		return errors.New("invalid cert")
+func (s *ChatServer) notifyAll() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	for conn, channel := range s.connections {
+		log.Printf("Notifying: %s", conn)
+		channel <- struct{}{}
 	}
-
-	certBytes, err := base64.StdEncoding.DecodeString(certStr)
-	if err != nil {
-		log.Errorf("failed to decode cert: %s", err)
-		return errors.New("invalid cert")
-	}
-
-	u.cert, err = x509.ParseCertificate(certBytes)
-	if err != nil {
-		log.Errorf("failed to parse cert: %s", err)
-		return errors.New("failed to parse cert")
-	}
-
-	if !slices.Contains(u.cert.Subject.Organization, "secure-chat") {
-		return errors.New("invalid cert")
-	}
-
-	u.username = u.cert.Subject.CommonName
-	welcomeMsg := &common.Msg{
-		Type: common.MsgTypeSystem,
-		Data: fmt.Sprintf("Welcome, %s!", u.username),
-	}
-
-	_, err = u.server.db.Exec("INSERT INTO users (username, certificate) VALUES (?, ?)", u.username, certBytes)
-	if err == nil {
-		err = u.Send(welcomeMsg)
-		if err != nil {
-			log.Errorf("failed to send welcome msg: %s", err)
-		}
-		return nil
-	}
-	if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
-		log.Errorf("failed to insert user: %s", err)
-		return errors.New("internal error")
-	}
-
-	row, err := u.server.db.Query("SELECT certificate FROM users WHERE username = ?", u.username)
-	if err != nil {
-		log.Errorf("failed to query user: %s", err)
-		return errors.New("internal error")
-	}
-	defer row.Close()
-
-	var certBytesFromDb []byte
-	for row.Next() {
-		err = row.Scan(&certBytesFromDb)
-		if err != nil {
-			log.Errorf("failed to scan user: %s", err)
-			return errors.New("internal error")
-		}
-	}
-
-	if !slices.Equal(certBytes, certBytesFromDb) {
-		return errors.New("username taken or invalid cert")
-	}
-
-	err = u.Send(welcomeMsg)
-	if err != nil {
-		log.Errorf("failed to send welcome msg: %s", err)
-	}
-
-	return nil
-}
-
-func (u *UserConn) handlePublic(msg interface{}) error {
-	jsonData, err := json.Marshal(msg)
-	if err != nil {
-		log.Errorf("failed to marshal public msg payload: %s", err)
-		return errors.New("invalid public msg")
-	}
-
-	var msgPublic common.MsgPublic
-	err = json.Unmarshal(jsonData, &msgPublic)
-	if err != nil {
-		log.Errorf("failed to unmarshal public msg: %s", err)
-		return errors.New("invalid public msg")
-	}
-
-	if err = msgPublic.Verify(u.cert); err != nil {
-		log.Errorf("failed to verify msg: %s", err)
-		return errors.New("invalid signature")
-	}
-
-	_, err = u.server.db.Exec("INSERT INTO public_msgs (author, signature, text) VALUES (?, ?, ?)", msgPublic.Author, msgPublic.Signature, msgPublic.Text)
-	if err != nil {
-		log.Errorf("failed to insert public msg: %s", err)
-		return errors.New("internal error")
-	}
-
-	return nil
-}
-
-func (u *UserConn) handleMessage(msg *common.Msg) error {
-	switch msg.Type {
-	case common.MsgTypeAuth:
-		return u.handleAuth(msg.Data)
-	case common.MsgTypePublic:
-		return u.handlePublic(msg.Data)
-	}
-	return errors.New("unknown message type")
-}
-
-func (u *UserConn) RunWorker() {
-	defer u.conn.Close()
-	for {
-		buf := make([]byte, 4096)
-		n, err := u.conn.Read(buf)
-		if err != nil {
-			if err.Error() == "EOF" {
-				log.Infof("connection from %s closed", u.conn.RemoteAddr())
-				return
-			}
-			log.Errorf("failed to read from %s: %s", u.conn.RemoteAddr(), err)
-			return
-		}
-		log.Infof("received %d bytes: %s", n, buf[:n])
-
-		var msg common.Msg
-		err = json.Unmarshal(buf[:n], &msg)
-		if err != nil {
-			log.Errorf("failed to unmarshal msg header: %s", err)
-			return
-		}
-
-		if err = u.handleMessage(&msg); err != nil {
-			_, err := u.conn.Write([]byte(err.Error()))
-			if err != nil {
-				log.Errorf("failed to write error: %s", err)
-				return
-			}
-			return
-		}
-	}
-}
-
-func (s *ChatServer) InitDb() error {
-	_, err := s.db.Exec("CREATE TABLE IF NOT EXISTS users (username VARCHAR(64) PRIMARY KEY, certificate BLOB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-	if err != nil {
-		return err
-	}
-
-	_, err = s.db.Exec("CREATE TABLE IF NOT EXISTS public_msgs (id INTEGER PRIMARY KEY AUTOINCREMENT, author VARCHAR(64) NOT NULL REFERENCES users(username), signature BLOB NOT NULL, text TEXT NOT NULL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-	if err != nil {
-		return err
-	}
-
-	return nil
 }

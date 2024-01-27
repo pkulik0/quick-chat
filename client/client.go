@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"github.com/pkulik0/secure-chat/common"
 	log "github.com/sirupsen/logrus"
 )
@@ -51,8 +52,35 @@ func (c *ChatClient) StartReceiver() {
 			return
 		}
 
-		log.Infof("received %d bytes: %s", n, buf[:n])
+		msg := &common.Msg{}
+		err = json.Unmarshal(buf[:n], msg)
+		if err != nil {
+			log.Errorf("failed to unmarshal msg: %s", err)
+			continue
+		}
+
+		err = c.handleMsg(msg)
+		if err != nil {
+			log.Errorf("failed to handle msg: %s", err)
+			continue
+		}
 	}
+}
+
+func (c *ChatClient) handleMsg(msg *common.Msg) error {
+	switch msg.Type {
+	case common.MsgTypeSystem:
+		log.Infof("system msg: %s", msg.Data)
+	case common.MsgTypePublic:
+		msgPublic, err := common.MsgPublicFromMsg(msg)
+		if err != nil {
+			return err
+		}
+		log.Infof("%s: %s", msgPublic.Author, msgPublic.Text)
+	default:
+		return fmt.Errorf("unknown msg type: %v", msg)
+	}
+	return nil
 }
 
 func (c *ChatClient) SendText(text string) error {
