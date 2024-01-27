@@ -8,6 +8,7 @@ import (
 	"github.com/pkulik0/secure-chat/common"
 	log "github.com/sirupsen/logrus"
 	"os"
+	"time"
 )
 
 func main() {
@@ -30,6 +31,7 @@ func main() {
 		if err := common.GenerateCert("server", "key.pem", "cert.pem"); err != nil {
 			log.Fatalf("failed to generate cert: %s", err)
 		}
+		time.Sleep(1 * time.Second) // wait for cert to be written to disk
 	}
 
 	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")

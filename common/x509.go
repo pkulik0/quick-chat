@@ -3,6 +3,7 @@ package common
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -67,4 +68,12 @@ func GenerateCert(commonName string, keyPath string, certPath string) error {
 	_, err = certFile.Write(certPem)
 
 	return nil
+}
+
+func LoadCert(certPath string, keyPath string) (tlsCert tls.Certificate, err error) {
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return tlsCert, err
+	}
+	return cert, nil
 }

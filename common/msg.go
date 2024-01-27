@@ -3,7 +3,7 @@ package common
 type MsgType uint8
 
 const (
-	MsgTypeCmd  MsgType = 0
+	MsgTypeAuth MsgType = 0
 	MsgTypeMsg  MsgType = 1
 	MsgTypeCert MsgType = 2
 )
