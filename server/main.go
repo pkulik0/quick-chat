@@ -25,6 +25,7 @@ func main() {
 	if err := db.Ping(); err != nil {
 		log.Fatalf("failed to ping db: %s", err)
 	}
+	defer db.Close()
 
 	if _, err := os.Stat("cert.pem"); os.IsNotExist(err) {
 		log.Infof("no key/cert found, generating new ones")
@@ -39,13 +40,13 @@ func main() {
 		log.Fatalf("failed to load cert: %s", err)
 	}
 
-	server := NewChatServer(*addr, cert, db)
+	server := NewChatServer(&cert, db)
 
 	if err := server.InitDb(); err != nil {
 		log.Fatalf("failed to initialize db: %s", err)
 	}
 
-	if err := server.Serve(); err != nil {
+	if err := server.Serve(*addr); err != nil {
 		log.Fatalf("failed to serve: %s", err)
 	}
 }

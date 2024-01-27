@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -13,7 +14,7 @@ import (
 	"strings"
 )
 
-type UserConn struct {
+type Conn struct {
 	conn    net.Conn
 	server  *ChatServer
 	channel chan struct{}
@@ -24,21 +25,21 @@ type UserConn struct {
 	lastSeenMsgId int
 }
 
-func NewUserConn(conn net.Conn, server *ChatServer) *UserConn {
-	return &UserConn{
+func NewConn(conn net.Conn, server *ChatServer) *Conn {
+	return &Conn{
 		conn:    conn,
 		server:  server,
 		channel: make(chan struct{}, 1),
 	}
 }
 
-func (u *UserConn) Close() {
+func (u *Conn) Close() {
 	u.server.unregisterConn(u.username)
 	close(u.channel)
 	u.conn.Close()
 }
 
-func (u *UserConn) Send(msg *common.Msg) error {
+func (u *Conn) Send(msg *common.Msg) error {
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -52,7 +53,7 @@ func (u *UserConn) Send(msg *common.Msg) error {
 	return nil
 }
 
-func (u *UserConn) handleAuthSuccess() error {
+func (u *Conn) handleAuthSuccess() error {
 	if err := u.server.registerConn(u.username, u.channel); err != nil {
 		return err
 	}
@@ -64,7 +65,7 @@ func (u *UserConn) handleAuthSuccess() error {
 	return u.Send(welcomeMsg)
 }
 
-func (u *UserConn) handleAuth(data interface{}) error {
+func (u *Conn) handleAuth(data interface{}) error {
 	certStr, ok := data.(string)
 	if !ok {
 		return errors.New("invalid cert")
@@ -119,13 +120,13 @@ func (u *UserConn) handleAuth(data interface{}) error {
 	return u.handleAuthSuccess()
 }
 
-func (u *UserConn) handlePublic(msgPublic *common.MsgPublic) error {
-	if err := msgPublic.Verify(u.cert); err != nil {
+func (u *Conn) handlePublic(msgPublic *common.MsgPublic) error {
+	if err := common.RsaVerify(u.cert.PublicKey.(*rsa.PublicKey), msgPublic.Signature, []byte(msgPublic.Text)); err != nil {
 		log.Errorf("failed to verify msg: %s", err)
 		return errors.New("invalid signature")
 	}
 
-	_, err := u.server.db.Exec("INSERT INTO public_msgs (author, signature, text) VALUES (?, ?, ?)", msgPublic.Author, msgPublic.Signature, msgPublic.Text)
+	_, err := u.server.db.Exec("INSERT INTO msgs (author, signature, text) VALUES (?, ?, ?)", msgPublic.Author, msgPublic.Signature, msgPublic.Text)
 	if err != nil {
 		log.Errorf("failed to insert public msg: %s", err)
 		return errors.New("internal error")
@@ -136,12 +137,43 @@ func (u *UserConn) handlePublic(msgPublic *common.MsgPublic) error {
 	return nil
 }
 
-func (u *UserConn) handleMessage(msg *common.Msg) error {
+func (u *Conn) requestPublicKeyFor(username string) error {
+	if username == u.username {
+		return errors.New("cannot request own key")
+	}
+
+	row, err := u.server.db.Query("SELECT certificate FROM users WHERE username = ? LIMIT 1", username)
+	if err != nil {
+		log.Errorf("failed to query user: %s", err)
+		return errors.New("internal error")
+	}
+	defer row.Close()
+
+	var certBytes []byte
+	if !row.Next() {
+		return errors.New("user not found")
+	}
+	err = row.Scan(&certBytes)
+	if err != nil {
+		log.Errorf("failed to scan user: %s", err)
+		return errors.New("internal error")
+	}
+
+	return u.Send(&common.Msg{
+		Type: common.MsgTypeKeyResponse,
+		Data: &common.KeyResponse{
+			Username:    username,
+			Certificate: certBytes,
+		},
+	})
+}
+
+func (u *Conn) handleMessage(msg *common.Msg) error {
 	switch msg.Type {
 	case common.MsgTypeAuth:
 		return u.handleAuth(msg.Data)
 	case common.MsgTypePublic:
-		msgPublic, err := common.MsgPublicFromMsg(msg)
+		msgPublic, err := common.UnpackFromMsg[common.MsgPublic](msg)
 		if err != nil {
 			log.Errorf("failed to get msg public: %s", err)
 			return errors.New("invalid msg")
@@ -153,18 +185,24 @@ func (u *UserConn) handleMessage(msg *common.Msg) error {
 			Type: common.MsgTypeSystem,
 			Data: fmt.Sprintf("Users online: %s", users),
 		})
+	case common.MsgTypeKeyRequest:
+		username, ok := msg.Data.(string)
+		if !ok {
+			return errors.New("invalid username")
+		}
+		return u.requestPublicKeyFor(username)
 	}
 	return errors.New("unknown message type")
 }
 
-func (u *UserConn) RunSendWorker() {
+func (u *Conn) RunSendWorker() {
 	for {
 		_, ok := <-u.channel
 		if !ok {
 			return
 		}
 
-		rows, err := u.server.db.Query("SELECT * FROM public_msgs WHERE id > ?", u.lastSeenMsgId)
+		rows, err := u.server.db.Query("SELECT id, author, signature, text, timestamp FROM msgs WHERE id > ? AND conversation IS NULL", u.lastSeenMsgId)
 		if err != nil {
 			log.Errorf("failed to query public msgs: %s", err)
 			continue
@@ -199,7 +237,7 @@ func (u *UserConn) RunSendWorker() {
 	}
 }
 
-func (u *UserConn) RunRecvWorker() {
+func (u *Conn) RunRecvWorker() {
 	defer u.Close()
 	for {
 		buf := make([]byte, 4096)
@@ -230,18 +268,4 @@ func (u *UserConn) RunRecvWorker() {
 			return
 		}
 	}
-}
-
-func (s *ChatServer) InitDb() error {
-	_, err := s.db.Exec("CREATE TABLE IF NOT EXISTS users (username VARCHAR(64) PRIMARY KEY, certificate BLOB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-	if err != nil {
-		return err
-	}
-
-	_, err = s.db.Exec("CREATE TABLE IF NOT EXISTS public_msgs (id INTEGER PRIMARY KEY AUTOINCREMENT, author VARCHAR(64) NOT NULL REFERENCES users(username), signature BLOB NOT NULL, text TEXT NOT NULL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-	if err != nil {
-		return err
-	}
-
-	return nil
 }

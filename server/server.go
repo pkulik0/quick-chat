@@ -9,33 +9,50 @@ import (
 )
 
 type ChatServer struct {
-	Addr string
-	Cert tls.Certificate
+	cert *tls.Certificate
 	db   *sql.DB
 
 	connections map[string]chan struct{}
 	mutex       sync.Mutex
 }
 
-func NewChatServer(addr string, cert tls.Certificate, db *sql.DB) *ChatServer {
+func NewChatServer(cert *tls.Certificate, db *sql.DB) *ChatServer {
 	return &ChatServer{
-		Addr:        addr,
-		Cert:        cert,
+		cert:        cert,
 		db:          db,
 		connections: make(map[string]chan struct{}),
 	}
 }
 
-func (s *ChatServer) Serve() error {
-	config := &tls.Config{
-		Certificates: []tls.Certificate{s.Cert},
+func (s *ChatServer) InitDb() error {
+	_, err := s.db.Exec("CREATE TABLE IF NOT EXISTS users (username VARCHAR(64) PRIMARY KEY, certificate BLOB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+	if err != nil {
+		return err
 	}
-	listener, err := tls.Listen("tcp", s.Addr, config)
+
+	_, err = s.db.Exec("CREATE TABLE IF NOT EXISTS conversations (id INTEGER PRIMARY KEY, users [2]VARCHAR(64) NOT NULL REFERENCES users(username), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec("CREATE TABLE IF NOT EXISTS msgs (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation INTEGER REFERENCES conversations(id) DEFAULT NULL, author VARCHAR(64) NOT NULL REFERENCES users(username), signature BLOB NOT NULL, text TEXT NOT NULL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *ChatServer) Serve(addr string) error {
+	config := &tls.Config{
+		Certificates: []tls.Certificate{*s.cert},
+	}
+	listener, err := tls.Listen("tcp", addr, config)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
-	log.Infof("listening on %s", s.Addr)
+	log.Infof("listening on %s", addr)
 
 	for {
 		conn, err := listener.Accept()
@@ -44,7 +61,7 @@ func (s *ChatServer) Serve() error {
 		}
 
 		log.Infof("new connection from %s", conn.RemoteAddr())
-		userConn := NewUserConn(conn, s)
+		userConn := NewConn(conn, s)
 		go userConn.RunRecvWorker()
 		go userConn.RunSendWorker()
 	}

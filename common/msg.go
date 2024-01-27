@@ -1,23 +1,19 @@
 package common
 
-import (
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
-)
+import "encoding/json"
 
 type MsgType uint8
 
 const (
-	MsgTypeAuth      MsgType = 0
-	MsgTypeSystem    MsgType = 1
-	MsgTypePublic    MsgType = 2
-	MsgTypePrivate   MsgType = 3
-	MsgTypeListUsers MsgType = 4
+	MsgTypeAuth                MsgType = 0
+	MsgTypeSystem              MsgType = 1
+	MsgTypePublic              MsgType = 2
+	MsgTypePrivate             MsgType = 3
+	MsgTypeListUsers           MsgType = 4
+	MsgTypeConversationRequest MsgType = 5
+	MsgTypeConversationAccept  MsgType = 6
+	MsgTypeKeyRequest          MsgType = 7
+	MsgTypeKeyResponse         MsgType = 8
 )
 
 type Msg struct {
@@ -32,56 +28,13 @@ func NewMsg(msgType MsgType, msg interface{}) *Msg {
 	}
 }
 
-type MsgPublic struct {
-	Author    string `json:"author"`
-	Text      string `json:"text"`
-	Signature []byte `json:"signature"`
-	Timestamp string `json:"timestamp"`
-}
-
-func NewMsgPublic(author string, text string, cert *tls.Certificate) (*Msg, error) {
-	hash := sha256.New()
-	hash.Write([]byte(text))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, cert.PrivateKey.(*rsa.PrivateKey), crypto.SHA256, hash.Sum(nil))
-	if err != nil {
-		return nil, err
-	}
-
-	return &Msg{
-		Type: MsgTypePublic,
-		Data: &MsgPublic{
-			Author:    author,
-			Text:      text,
-			Signature: signature,
-		},
-	}, nil
-}
-
-func MsgPublicFromDb(author string, text string, signature []byte, timestamp string) *Msg {
-	return &Msg{
-		Type: MsgTypePublic,
-		Data: &MsgPublic{
-			Author:    author,
-			Text:      text,
-			Signature: signature,
-			Timestamp: timestamp,
-		},
-	}
-}
-
-func MsgPublicFromMsg(msg *Msg) (*MsgPublic, error) {
+func UnpackFromMsg[T any](msg *Msg) (*T, error) {
 	jsonData, err := json.Marshal(msg.Data)
 	if err != nil {
 		return nil, err
 	}
 
-	var msgPublic *MsgPublic
-	err = json.Unmarshal(jsonData, &msgPublic)
-	return msgPublic, err
-}
-
-func (m *MsgPublic) Verify(cert *x509.Certificate) error {
-	hash := sha256.New()
-	hash.Write([]byte(m.Text))
-	return rsa.VerifyPKCS1v15(cert.PublicKey.(*rsa.PublicKey), crypto.SHA256, hash.Sum(nil), m.Signature)
+	var data T
+	err = json.Unmarshal(jsonData, &data)
+	return &data, err
 }

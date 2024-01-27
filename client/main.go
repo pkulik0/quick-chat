@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"database/sql"
 	"flag"
 	"fmt"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/pkulik0/secure-chat/common"
 	log "github.com/sirupsen/logrus"
 	"os"
@@ -35,18 +37,30 @@ func main() {
 		log.Fatalf("failed to load cert: %s", err)
 	}
 
-	config := &tls.Config{
+	conn, err := tls.Dial("tcp", *addr, &tls.Config{
 		InsecureSkipVerify: true,
-	}
-	conn, err := tls.Dial("tcp", *addr, config)
+	})
 	if err != nil {
 		log.Fatalf("failed to connect to %s: %s", *addr, err)
 	}
 	defer conn.Close()
 
-	client := NewChatClient(conn, &cert, *username)
-	go client.StartReceiver()
+	db, err := sql.Open("sqlite3", "file:client.db?cache?shared")
+	if err != nil {
+		log.Fatalf("failed to open db: %s", err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		log.Fatalf("failed to ping db: %s", err)
+	}
+	defer db.Close()
 
+	client := NewChatClient(conn, &cert, db, *username)
+	if err := client.InitDb(); err != nil {
+		log.Fatalf("failed to initialize db: %s", err)
+	}
+
+	go client.StartReceiver()
 	if err := client.Connect(); err != nil {
 		log.Fatalf("failed to connect: %s", err)
 	}
