@@ -5,70 +5,10 @@ import (
 	"database/sql"
 	"flag"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/pkulik0/secure-chat/common"
 	log "github.com/sirupsen/logrus"
-	"net"
+	"os"
 )
-
-type ChatServer struct {
-	Addr string
-	Cert tls.Certificate
-	db   *sql.DB
-}
-
-func NewChatServer(addr string, cert tls.Certificate, db *sql.DB) *ChatServer {
-	return &ChatServer{
-		Addr: addr,
-		Cert: cert,
-		db:   db,
-	}
-}
-
-func (s *ChatServer) Serve() error {
-	config := &tls.Config{
-		Certificates: []tls.Certificate{s.Cert},
-	}
-	listener, err := tls.Listen("tcp", s.Addr, config)
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-	log.Infof("listening on %s", s.Addr)
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Errorf("failed to accept conn: %s", err)
-		}
-		go s.handleConn(conn)
-	}
-}
-
-func (s *ChatServer) handleConn(conn net.Conn) {
-	defer conn.Close()
-	log.Infof("new connection from %s", conn.RemoteAddr())
-
-	for {
-		buf := make([]byte, 1024)
-		n, err := conn.Read(buf)
-		if err != nil {
-			if err.Error() == "EOF" {
-				log.Infof("connection from %s closed", conn.RemoteAddr())
-				return
-			}
-			log.Errorf("failed to read from %s: %s", conn.RemoteAddr(), err)
-			return
-		}
-		log.Infof("received %d bytes: %s", n, buf[:n])
-	}
-}
-
-func (s *ChatServer) InitDb() error {
-	_, err := s.db.Exec("CREATE TABLE IF NOT EXISTS users (username VARCHAR(255) PRIMARY KEY, password VARCHAR(255) NOT NULL)")
-	if err != nil {
-		return err
-	}
-	return nil
-}
 
 func main() {
 	log.Infof("secure-chat server started")
@@ -83,6 +23,13 @@ func main() {
 	}
 	if err := db.Ping(); err != nil {
 		log.Fatalf("failed to ping db: %s", err)
+	}
+
+	if _, err := os.Stat("cert.pem"); os.IsNotExist(err) {
+		log.Infof("no key/cert found, generating new ones")
+		if err := common.GenerateCert("server", "key.pem", "cert.pem"); err != nil {
+			log.Fatalf("failed to generate cert: %s", err)
+		}
 	}
 
 	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
