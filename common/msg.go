@@ -3,9 +3,9 @@ package common
 type MsgType uint8
 
 const (
-	MsgTypeAuth MsgType = 0
-	MsgTypeMsg  MsgType = 1
-	MsgTypeCert MsgType = 2
+	MsgTypeAuth   MsgType = 0
+	MsgTypeSystem MsgType = 1
+	MsgTypeMsg    MsgType = 2
 )
 
 type MsgHeader struct {

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/pkulik0/secure-chat/common"
 	log "github.com/sirupsen/logrus"
 	"net"
@@ -64,6 +65,8 @@ func (s *ChatServer) authenticateUser(certBytes []byte) error {
 type UserConn struct {
 	conn   net.Conn
 	server *ChatServer
+
+	username string
 }
 
 func NewUserConn(conn net.Conn, server *ChatServer) *UserConn {
@@ -71,6 +74,20 @@ func NewUserConn(conn net.Conn, server *ChatServer) *UserConn {
 		conn:   conn,
 		server: server,
 	}
+}
+
+func (u *UserConn) Send(msg *common.MsgHeader) error {
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	_, err = u.conn.Write(msgBytes)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (u *UserConn) handleAuth(data interface{}) error {
@@ -95,9 +112,18 @@ func (u *UserConn) handleAuth(data interface{}) error {
 		return errors.New("invalid cert")
 	}
 
-	username := cert.Subject.CommonName
-	_, err = u.server.db.Exec("INSERT INTO users (username, certificate) VALUES (?, ?)", username, certBytes)
+	u.username = cert.Subject.CommonName
+	welcomeMsg := &common.MsgHeader{
+		Type: common.MsgTypeSystem,
+		Data: fmt.Sprintf("Welcome, %s!", u.username),
+	}
+
+	_, err = u.server.db.Exec("INSERT INTO users (username, certificate) VALUES (?, ?)", u.username, certBytes)
 	if err == nil {
+		err = u.Send(welcomeMsg)
+		if err != nil {
+			log.Errorf("failed to send welcome msg: %s", err)
+		}
 		return nil
 	}
 	if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -105,7 +131,7 @@ func (u *UserConn) handleAuth(data interface{}) error {
 		return errors.New("internal error")
 	}
 
-	row, err := u.server.db.Query("SELECT certificate FROM users WHERE username = ?", username)
+	row, err := u.server.db.Query("SELECT certificate FROM users WHERE username = ?", u.username)
 	if err != nil {
 		log.Errorf("failed to query user: %s", err)
 		return errors.New("internal error")
@@ -123,6 +149,11 @@ func (u *UserConn) handleAuth(data interface{}) error {
 
 	if !slices.Equal(certBytes, certBytesFromDb) {
 		return errors.New("invalid cert")
+	}
+
+	err = u.Send(welcomeMsg)
+	if err != nil {
+		log.Errorf("failed to send welcome msg: %s", err)
 	}
 
 	return nil
