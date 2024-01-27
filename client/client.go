@@ -76,7 +76,7 @@ func (c *ChatClient) handleMsg(msg *common.Msg) error {
 		if err != nil {
 			return err
 		}
-		log.Infof("%s: %s", msgPublic.Author, msgPublic.Text)
+		log.Infof("[%s] %s: %s", msgPublic.Timestamp, msgPublic.Author, msgPublic.Text)
 	default:
 		return fmt.Errorf("unknown msg type: %v", msg)
 	}

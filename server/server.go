@@ -58,6 +58,7 @@ func (s *ChatServer) registerConn(username string, channel chan struct{}) error 
 		return fmt.Errorf("user %s already connected", username)
 	}
 	s.connections[username] = channel
+	channel <- struct{}{}
 	return nil
 }
 

@@ -28,12 +28,13 @@ func NewUserConn(conn net.Conn, server *ChatServer) *UserConn {
 	return &UserConn{
 		conn:    conn,
 		server:  server,
-		channel: make(chan struct{}),
+		channel: make(chan struct{}, 1),
 	}
 }
 
 func (u *UserConn) Close() {
 	u.server.unregisterConn(u.username)
+	close(u.channel)
 	u.conn.Close()
 }
 
@@ -158,7 +159,11 @@ func (u *UserConn) handleMessage(msg *common.Msg) error {
 
 func (u *UserConn) RunSendWorker() {
 	for {
-		<-u.channel
+		_, ok := <-u.channel
+		if !ok {
+			return
+		}
+
 		rows, err := u.server.db.Query("SELECT * FROM public_msgs WHERE id > ?", u.lastSeenMsgId)
 		if err != nil {
 			log.Errorf("failed to query public msgs: %s", err)
@@ -177,7 +182,7 @@ func (u *UserConn) RunSendWorker() {
 				log.Errorf("failed to scan public msg: %s", err)
 				continue
 			}
-			msgs = append(msgs, common.MsgPublicFromDb(author, text, signature))
+			msgs = append(msgs, common.MsgPublicFromDb(author, text, signature, timestamp))
 
 			if u.lastSeenMsgId < id {
 				u.lastSeenMsgId = id
