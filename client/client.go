@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"github.com/pkulik0/secure-chat/common"
 	log "github.com/sirupsen/logrus"
@@ -10,22 +11,19 @@ import (
 type ChatClient struct {
 	conn *tls.Conn
 	cert *tls.Certificate
+
+	username string
 }
 
-func NewChatClient(conn *tls.Conn, cert *tls.Certificate) *ChatClient {
+func NewChatClient(conn *tls.Conn, cert *tls.Certificate, username string) *ChatClient {
 	return &ChatClient{
-		conn: conn,
-		cert: cert,
+		conn:     conn,
+		cert:     cert,
+		username: username,
 	}
 }
 
-func (c *ChatClient) Connect() error {
-	data := c.cert.Certificate[0]
-	msg := common.MsgHeader{
-		Type: common.MsgTypeAuth,
-		Data: data,
-	}
-
+func (c *ChatClient) Send(msg *common.Msg) error {
 	jsonBytes, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -35,8 +33,13 @@ func (c *ChatClient) Connect() error {
 	if err != nil {
 		return err
 	}
-
 	return nil
+}
+
+func (c *ChatClient) Connect() error {
+	cert := base64.StdEncoding.EncodeToString(c.cert.Certificate[0])
+	msg := common.NewMsg(common.MsgTypeAuth, cert)
+	return c.Send(msg)
 }
 
 func (c *ChatClient) StartReceiver() {
@@ -52,20 +55,7 @@ func (c *ChatClient) StartReceiver() {
 	}
 }
 
-func (c *ChatClient) Send(msg string) error {
-	log.Infof("sending message: %s", msg)
-
-	msgType := common.MsgTypeMsg
-	header := common.NewMsgHeader(msgType, msg)
-
-	jsonBytes, err := json.Marshal(header)
-	if err != nil {
-		return err
-	}
-
-	_, err = c.conn.Write(jsonBytes)
-	if err != nil {
-		return err
-	}
-	return nil
+func (c *ChatClient) SendText(text string) error {
+	msg := common.NewMsg(common.MsgTypePublic, text)
+	return c.Send(msg)
 }

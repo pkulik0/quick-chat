@@ -67,6 +67,7 @@ type UserConn struct {
 	server *ChatServer
 
 	username string
+	cert     *x509.Certificate
 }
 
 func NewUserConn(conn net.Conn, server *ChatServer) *UserConn {
@@ -76,7 +77,7 @@ func NewUserConn(conn net.Conn, server *ChatServer) *UserConn {
 	}
 }
 
-func (u *UserConn) Send(msg *common.MsgHeader) error {
+func (u *UserConn) Send(msg *common.Msg) error {
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -102,18 +103,18 @@ func (u *UserConn) handleAuth(data interface{}) error {
 		return errors.New("invalid cert")
 	}
 
-	cert, err := x509.ParseCertificate(certBytes)
+	u.cert, err = x509.ParseCertificate(certBytes)
 	if err != nil {
 		log.Errorf("failed to parse cert: %s", err)
 		return errors.New("failed to parse cert")
 	}
 
-	if !slices.Contains(cert.Subject.Organization, "secure-chat") {
+	if !slices.Contains(u.cert.Subject.Organization, "secure-chat") {
 		return errors.New("invalid cert")
 	}
 
-	u.username = cert.Subject.CommonName
-	welcomeMsg := &common.MsgHeader{
+	u.username = u.cert.Subject.CommonName
+	welcomeMsg := &common.Msg{
 		Type: common.MsgTypeSystem,
 		Data: fmt.Sprintf("Welcome, %s!", u.username),
 	}
@@ -148,7 +149,7 @@ func (u *UserConn) handleAuth(data interface{}) error {
 	}
 
 	if !slices.Equal(certBytes, certBytesFromDb) {
-		return errors.New("invalid cert")
+		return errors.New("username taken or invalid cert")
 	}
 
 	err = u.Send(welcomeMsg)
@@ -159,10 +160,40 @@ func (u *UserConn) handleAuth(data interface{}) error {
 	return nil
 }
 
-func (u *UserConn) handleMessage(msg *common.MsgHeader) error {
+func (u *UserConn) handlePublic(msg interface{}) error {
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		log.Errorf("failed to marshal public msg payload: %s", err)
+		return errors.New("invalid public msg")
+	}
+
+	var msgPublic common.MsgPublic
+	err = json.Unmarshal(jsonData, &msgPublic)
+	if err != nil {
+		log.Errorf("failed to unmarshal public msg: %s", err)
+		return errors.New("invalid public msg")
+	}
+
+	if err = msgPublic.Verify(u.cert); err != nil {
+		log.Errorf("failed to verify msg: %s", err)
+		return errors.New("invalid signature")
+	}
+
+	_, err = u.server.db.Exec("INSERT INTO public_msgs (author, signature, text) VALUES (?, ?, ?)", msgPublic.Author, msgPublic.Signature, msgPublic.Text)
+	if err != nil {
+		log.Errorf("failed to insert public msg: %s", err)
+		return errors.New("internal error")
+	}
+
+	return nil
+}
+
+func (u *UserConn) handleMessage(msg *common.Msg) error {
 	switch msg.Type {
 	case common.MsgTypeAuth:
 		return u.handleAuth(msg.Data)
+	case common.MsgTypePublic:
+		return u.handlePublic(msg.Data)
 	}
 	return errors.New("unknown message type")
 }
@@ -182,14 +213,14 @@ func (u *UserConn) RunWorker() {
 		}
 		log.Infof("received %d bytes: %s", n, buf[:n])
 
-		var msgHeader common.MsgHeader
-		err = json.Unmarshal(buf[:n], &msgHeader)
+		var msg common.Msg
+		err = json.Unmarshal(buf[:n], &msg)
 		if err != nil {
 			log.Errorf("failed to unmarshal msg header: %s", err)
 			return
 		}
 
-		if err = u.handleMessage(&msgHeader); err != nil {
+		if err = u.handleMessage(&msg); err != nil {
 			_, err := u.conn.Write([]byte(err.Error()))
 			if err != nil {
 				log.Errorf("failed to write error: %s", err)
@@ -201,9 +232,15 @@ func (u *UserConn) RunWorker() {
 }
 
 func (s *ChatServer) InitDb() error {
-	_, err := s.db.Exec("CREATE TABLE IF NOT EXISTS users (username VARCHAR(64) PRIMARY KEY, certificate BLOB NOT NULL)")
+	_, err := s.db.Exec("CREATE TABLE IF NOT EXISTS users (username VARCHAR(64) PRIMARY KEY, certificate BLOB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
 	if err != nil {
 		return err
 	}
+
+	_, err = s.db.Exec("CREATE TABLE IF NOT EXISTS public_msgs (id INTEGER PRIMARY KEY AUTOINCREMENT, author VARCHAR(64) NOT NULL REFERENCES users(username), signature BLOB NOT NULL, text TEXT NOT NULL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+	if err != nil {
+		return err
+	}
+
 	return nil
 }

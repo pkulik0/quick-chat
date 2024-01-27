@@ -1,6 +1,6 @@
 .idea
 .vscode
-go.work
+go.work*
 *.db
 *.pem
 *.key

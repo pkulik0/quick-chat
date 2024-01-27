@@ -44,7 +44,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	client := NewChatClient(conn, &cert)
+	client := NewChatClient(conn, &cert, *username)
 	go client.StartReceiver()
 
 	if err := client.Connect(); err != nil {
@@ -59,7 +59,11 @@ func main() {
 		}
 		input = input[:len(input)-1]
 
-		err = client.Send(input)
+		pubMsg, err := common.NewMsgPublic(client.username, input, client.cert)
+		if err != nil {
+			log.Fatalf("failed to create msg: %s", err)
+		}
+		err = client.Send(pubMsg)
 		if err != nil {
 			log.Fatalf("failed to send message: %s", err)
 		}
