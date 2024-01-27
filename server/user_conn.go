@@ -147,6 +147,12 @@ func (u *UserConn) handleMessage(msg *common.Msg) error {
 			return errors.New("invalid msg")
 		}
 		return u.handlePublic(msgPublic)
+	case common.MsgTypeListUsers:
+		users := strings.Join(u.server.listUsers(), ", ")
+		return u.Send(&common.Msg{
+			Type: common.MsgTypeSystem,
+			Data: fmt.Sprintf("Users online: %s", users),
+		})
 	}
 	return errors.New("unknown message type")
 }

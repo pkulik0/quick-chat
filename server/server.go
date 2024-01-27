@@ -50,21 +50,40 @@ func (s *ChatServer) Serve() error {
 	}
 }
 
+func (s *ChatServer) listUsers() []string {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	log.Printf("Listing users (%d) %v", len(s.connections), s.connections)
+
+	i := 0
+	users := make([]string, len(s.connections))
+	for username, _ := range s.connections {
+		users[i] = username
+		i++
+	}
+	return users
+}
+
 func (s *ChatServer) registerConn(username string, channel chan struct{}) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	log.Printf("Registering %s", username)
 
 	if _, ok := s.connections[username]; ok {
 		return fmt.Errorf("user %s already connected", username)
 	}
 	s.connections[username] = channel
 	channel <- struct{}{}
+
 	return nil
 }
 
 func (s *ChatServer) unregisterConn(username string) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	log.Printf("Unregistering %s", username)
+
 	delete(s.connections, username)
 }
 
@@ -84,8 +103,8 @@ func (s *ChatServer) notifyAll() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	for conn, channel := range s.connections {
-		log.Printf("Notifying: %s", conn)
+	log.Println("Notifying all")
+	for _, channel := range s.connections {
 		channel <- struct{}{}
 	}
 }

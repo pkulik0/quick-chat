@@ -13,9 +13,11 @@ import (
 type MsgType uint8
 
 const (
-	MsgTypeAuth   MsgType = 0
-	MsgTypeSystem MsgType = 1
-	MsgTypePublic MsgType = 2
+	MsgTypeAuth      MsgType = 0
+	MsgTypeSystem    MsgType = 1
+	MsgTypePublic    MsgType = 2
+	MsgTypePrivate   MsgType = 3
+	MsgTypeListUsers MsgType = 4
 )
 
 type Msg struct {

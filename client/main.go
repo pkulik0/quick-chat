@@ -59,6 +59,16 @@ func main() {
 		}
 		input = input[:len(input)-1]
 
+		log.Debugf("input: '%v'", input)
+		if input == "/list" {
+			msg := common.NewMsg(common.MsgTypeListUsers, nil)
+			err := client.Send(msg)
+			if err != nil {
+				log.Fatalf("failed to send message: %s", err)
+			}
+			continue
+		}
+
 		pubMsg, err := common.NewMsgPublic(client.username, input, client.cert)
 		if err != nil {
 			log.Fatalf("failed to create msg: %s", err)
