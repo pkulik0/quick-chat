@@ -12,8 +12,10 @@ import (
 	"time"
 )
 
+const rsaKeySize = 4096
+
 func GenerateCert(commonName string, keyPath string, certPath string) error {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	privateKey, err := rsa.GenerateKey(rand.Reader, rsaKeySize)
 	if err != nil {
 		return err
 	}

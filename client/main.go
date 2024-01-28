@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/rsa"
 	"crypto/tls"
 	"database/sql"
 	"flag"
@@ -13,6 +14,8 @@ import (
 )
 
 func main() {
+	log.SetLevel(log.DebugLevel)
+
 	addr := flag.String("addr", "", "server address")
 	username := flag.String("username", "", "username")
 	flag.Parse()
@@ -23,8 +26,11 @@ func main() {
 		log.Fatalf("must specify username")
 	}
 
-	certFile := fmt.Sprintf("cert_%s.pem", *username)
-	keyFile := fmt.Sprintf("key_%s.pem", *username)
+	if err := os.Mkdir("keys", 0700); err != nil && !os.IsExist(err) {
+		log.Fatalf("failed to create keys directory: %s", err)
+	}
+	certFile := fmt.Sprintf("keys/cert_%s.pem", *username)
+	keyFile := fmt.Sprintf("keys/key_%s.pem", *username)
 	if _, err := os.Stat(certFile); os.IsNotExist(err) {
 		log.Infof("no key/cert found, generating new ones")
 		if err := common.GenerateCert(*username, keyFile, certFile); err != nil {
@@ -83,7 +89,7 @@ func main() {
 			continue
 		}
 
-		pubMsg, err := common.NewMsgPublic(client.username, input, client.cert)
+		pubMsg, err := common.NewMsgPublic(client.username, input, client.cert.PrivateKey.(*rsa.PrivateKey))
 		if err != nil {
 			log.Fatalf("failed to create msg: %s", err)
 		}

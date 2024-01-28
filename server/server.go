@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"fmt"
+	"github.com/pkulik0/secure-chat/common"
 	log "github.com/sirupsen/logrus"
 	"sync"
 )
@@ -31,6 +32,11 @@ func (s *ChatServer) InitDb() error {
 	}
 
 	_, err = s.db.Exec("CREATE TABLE IF NOT EXISTS conversations (id INTEGER PRIMARY KEY, users [2]VARCHAR(64) NOT NULL REFERENCES users(username), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec("CREATE TABLE IF NOT EXISTS requests (id INTEGER PRIMARY KEY, sender VARCHAR(64) NOT NULL REFERENCES users(username), recipient VARCHAR(64) NOT NULL REFERENCES users(username), p BLOB NOT NULL, g BLOB NOT NULL, sender_encr_result BLOB NOT NULL, recipient_encr_result BLOB, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
 	if err != nil {
 		return err
 	}
@@ -124,4 +130,8 @@ func (s *ChatServer) notifyAll() {
 	for _, channel := range s.connections {
 		channel <- struct{}{}
 	}
+}
+
+func (s *ChatServer) requestConversation(request *common.ConversationRequest) error {
+	return nil
 }

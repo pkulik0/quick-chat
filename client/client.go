@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -42,10 +44,16 @@ func (c *ChatClient) Send(msg *common.Msg) error {
 		return err
 	}
 
+	_, err = c.conn.Write([]byte(fmt.Sprintf("%d\n", len(jsonBytes))))
+	if err != nil {
+		return err
+	}
+
 	_, err = c.conn.Write(jsonBytes)
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -57,15 +65,28 @@ func (c *ChatClient) Connect() error {
 
 func (c *ChatClient) StartReceiver() {
 	for {
-		buf := make([]byte, 4096)
-		n, err := c.conn.Read(buf)
+		sizeBuf := make([]byte, 32)
+		_, err := c.conn.Read(sizeBuf)
 		if err != nil {
 			log.Errorf("failed to read from %s: %s", c.conn.RemoteAddr(), err)
 			return
 		}
+		var size int
+		_, err = fmt.Sscanf(string(sizeBuf), "%d", &size)
+
+		buf := make([]byte, size)
+		occupied := 0
+		for occupied < size {
+			n, err := c.conn.Read(buf)
+			if err != nil {
+				log.Errorf("failed to read from %s: %s", c.conn.RemoteAddr(), err)
+				return
+			}
+			occupied += n
+		}
 
 		msg := &common.Msg{}
-		err = json.Unmarshal(buf[:n], msg)
+		err = json.Unmarshal(buf, msg)
 		if err != nil {
 			log.Errorf("failed to unmarshal msg: %s", err)
 			continue
@@ -90,15 +111,33 @@ func (c *ChatClient) requestUserKeyIfNotKnown(username string) error {
 	}
 	defer row.Close()
 	if row.Next() {
-		return nil
+		var certificate []byte
+		return row.Scan(&certificate)
 	}
 
+	log.Infof("requesting public key for %s", username)
 	return c.Send(common.NewKeyRequest(username))
 }
 
 func (c *ChatClient) saveUserToKnown(username string, certificate []byte) error {
 	_, err := c.db.Exec("INSERT INTO known_users (username, certificate) VALUES (?, ?)", username, certificate)
-	return err
+	if err != nil {
+		if err.Error() == "UNIQUE constraint failed: known_users.username" {
+			return nil
+		}
+		return err
+	}
+
+	recipientCert, err := x509.ParseCertificate(certificate)
+	if err != nil {
+		return err
+	}
+
+	msg, err := common.NewConversationRequest(c.username, c.cert.PrivateKey.(*rsa.PrivateKey), username, recipientCert.PublicKey.(*rsa.PublicKey))
+	if err != nil {
+		return err
+	}
+	return c.Send(msg)
 }
 
 func (c *ChatClient) handleMsg(msg *common.Msg) error {

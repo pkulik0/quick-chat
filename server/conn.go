@@ -45,6 +45,11 @@ func (u *Conn) Send(msg *common.Msg) error {
 		return err
 	}
 
+	_, err = u.conn.Write([]byte(fmt.Sprintf("%d\n", len(msgBytes))))
+	if err != nil {
+		return err
+	}
+
 	_, err = u.conn.Write(msgBytes)
 	if err != nil {
 		return err
@@ -191,8 +196,16 @@ func (u *Conn) handleMessage(msg *common.Msg) error {
 			return errors.New("invalid username")
 		}
 		return u.requestPublicKeyFor(username)
+	case common.MsgTypeConversationRequest:
+		request, err := common.UnpackFromMsg[common.ConversationRequest](msg)
+		if err != nil {
+			log.Errorf("failed to get conversation request: %s", err)
+			return errors.New("invalid msg")
+		}
+		return u.server.requestConversation(request)
+	default:
+		return errors.New("invalid msg type")
 	}
-	return errors.New("unknown message type")
 }
 
 func (u *Conn) RunSendWorker() {
@@ -239,31 +252,42 @@ func (u *Conn) RunSendWorker() {
 
 func (u *Conn) RunRecvWorker() {
 	defer u.Close()
+
 	for {
-		buf := make([]byte, 4096)
-		n, err := u.conn.Read(buf)
+		sizeBuf := make([]byte, 32)
+		_, err := u.conn.Read(sizeBuf)
 		if err != nil {
-			if err.Error() == "EOF" {
-				log.Infof("connection from %s closed", u.conn.RemoteAddr())
-				return
-			}
 			log.Errorf("failed to read from %s: %s", u.conn.RemoteAddr(), err)
 			return
 		}
-		log.Infof("received %d bytes: %s", n, buf[:n])
+		var size int
+		_, err = fmt.Sscanf(string(sizeBuf), "%d", &size)
+
+		buf := make([]byte, size)
+		occupied := 0
+		for occupied < size {
+			n, err := u.conn.Read(buf)
+			if err != nil {
+				log.Errorf("failed to read from %s: %s", u.conn.RemoteAddr(), err)
+				return
+			}
+			occupied += n
+		}
 
 		var msg common.Msg
-		err = json.Unmarshal(buf[:n], &msg)
+		err = json.Unmarshal(buf, &msg)
 		if err != nil {
 			log.Errorf("failed to unmarshal msg header: %s", err)
 			return
 		}
 
 		if err = u.handleMessage(&msg); err != nil {
-			_, err := u.conn.Write([]byte(err.Error()))
+			err := u.Send(&common.Msg{
+				Type: common.MsgTypeSystem,
+				Data: err.Error(),
+			})
 			if err != nil {
-				log.Errorf("failed to write error: %s", err)
-				return
+				log.Errorf("failed to write error msg: %s", err)
 			}
 			return
 		}

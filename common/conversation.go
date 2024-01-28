@@ -7,11 +7,11 @@ import (
 )
 
 type ConversationRequest struct {
-	From   string   `json:"from"`
-	To     string   `json:"to"`
-	P      *big.Int `json:"p"`
-	G      *big.Int `json:"g"`
-	Result []byte   `json:"result"`
+	From   string `json:"from"`
+	To     string `json:"to"`
+	P      []byte `json:"p"`
+	G      []byte `json:"g"`
+	Result []byte `json:"result"`
 }
 
 const primeBitSize = 2048
@@ -43,7 +43,8 @@ func NewConversationRequest(fromUsername string, keyFrom *rsa.PrivateKey, toUser
 		return nil, err
 	}
 
-	result, err := RsaEncrypt(keyTo, calcPartialResult(g, p, keyFrom.N.Bytes()).Bytes())
+	result := calcPartialResult(g, p, keyFrom.D.Bytes()).Bytes()
+	encryptedResult, err := RsaEncrypt(keyTo, result)
 	if err != nil {
 		return nil, err
 	}
@@ -53,9 +54,9 @@ func NewConversationRequest(fromUsername string, keyFrom *rsa.PrivateKey, toUser
 		Data: &ConversationRequest{
 			From:   fromUsername,
 			To:     toUsername,
-			P:      p,
-			G:      g,
-			Result: result,
+			P:      p.Bytes(),
+			G:      g.Bytes(),
+			Result: encryptedResult,
 		},
 	}, nil
 }
@@ -68,7 +69,7 @@ func (r *ConversationRequest) GetSharedKey(acceptorKey *rsa.PrivateKey) (*rsa.Pr
 
 	result := calcFinalResult(
 		new(big.Int).SetBytes(partialResult),
-		r.P,
+		new(big.Int).SetBytes(r.P),
 		acceptorKey.N.Bytes(),
 	)
 
@@ -89,7 +90,9 @@ type ConversationAccept struct {
 }
 
 func NewConversationAccept(keyRequestor *rsa.PublicKey, keyAcceptor *rsa.PrivateKey, request *ConversationRequest) (*Msg, error) {
-	result, err := RsaEncrypt(keyRequestor, calcPartialResult(request.G, request.P, keyAcceptor.N.Bytes()).Bytes())
+	p := new(big.Int).SetBytes(request.P)
+	g := new(big.Int).SetBytes(request.G)
+	result, err := RsaEncrypt(keyRequestor, calcPartialResult(g, p, keyAcceptor.N.Bytes()).Bytes())
 	if err != nil {
 		return nil, err
 	}

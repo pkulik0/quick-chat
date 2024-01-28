@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+const (
+	keyFile  = "keys/key.pem"
+	certFile = "keys/cert.pem"
+)
+
 func main() {
 	log.Infof("secure-chat server started")
 
@@ -27,15 +32,18 @@ func main() {
 	}
 	defer db.Close()
 
-	if _, err := os.Stat("cert.pem"); os.IsNotExist(err) {
+	if _, err := os.Stat(certFile); os.IsNotExist(err) {
 		log.Infof("no key/cert found, generating new ones")
-		if err := common.GenerateCert("server", "key.pem", "cert.pem"); err != nil {
+		if err := os.Mkdir("keys", 0700); err != nil && !os.IsExist(err) {
+			log.Fatalf("failed to create keys directory: %s", err)
+		}
+		if err := common.GenerateCert("server", keyFile, certFile); err != nil {
 			log.Fatalf("failed to generate cert: %s", err)
 		}
 		time.Sleep(1 * time.Second) // wait for cert to be written to disk
 	}
 
-	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		log.Fatalf("failed to load cert: %s", err)
 	}
