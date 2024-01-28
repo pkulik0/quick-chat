@@ -195,6 +195,7 @@ func (u *Conn) handleMessage(msg *common.Msg) error {
 		if !ok {
 			return errors.New("invalid username")
 		}
+		log.Infof("Got key request: %s -> %s", u.username, username)
 		return u.requestPublicKeyFor(username)
 	case common.MsgTypeConversationRequest:
 		request, err := common.UnpackFromMsg[common.ConversationRequest](msg)
@@ -202,7 +203,16 @@ func (u *Conn) handleMessage(msg *common.Msg) error {
 			log.Errorf("failed to get conversation request: %s", err)
 			return errors.New("invalid msg")
 		}
-		return u.server.requestConversation(request)
+		log.Infof("Got conversation request: %s -> %s", request.From, request.To)
+		return u.server.handleConversationRequest(request)
+	case common.MsgTypeConversationAccept:
+		accept, err := common.UnpackFromMsg[common.ConversationAccept](msg)
+		if err != nil {
+			log.Errorf("failed to get conversation accept: %s", err)
+			return errors.New("invalid msg")
+		}
+		log.Infof("Got conversation accept: %s -> %s", accept.From, accept.To)
+		return nil
 	default:
 		return errors.New("invalid msg type")
 	}
@@ -238,6 +248,28 @@ func (u *Conn) RunSendWorker() {
 			if u.lastSeenMsgId < id {
 				u.lastSeenMsgId = id
 			}
+		}
+
+		rows, err = u.server.db.Query("SELECT sender, p, g, sender_encr_result, certificate FROM requests JOIN users ON users.username = requests.sender WHERE recipient = ? AND recipient_encr_result IS NULL", u.username)
+		if err != nil {
+			log.Errorf("failed to query conversation requests: %s", err)
+			continue
+		}
+		for rows.Next() {
+			var sender string
+			var p []byte
+			var g []byte
+			var senderEncrResult []byte
+			var senderCertBytes []byte
+			err = rows.Scan(&sender, &p, &g, &senderEncrResult, &senderCertBytes)
+			if err != nil {
+				log.Errorf("failed to scan conversation request: %s", err)
+				continue
+			}
+			msgs = append(msgs, &common.Msg{
+				Type: common.MsgTypeConversationRequest,
+				Data: common.ConversationRequestFromDb(sender, u.username, p, g, senderEncrResult, senderCertBytes),
+			})
 		}
 
 		for _, msg := range msgs {

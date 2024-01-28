@@ -30,7 +30,7 @@ func NewChatClient(conn *tls.Conn, cert *tls.Certificate, db *sql.DB, username s
 }
 
 func (c *ChatClient) InitDb() error {
-	_, err := c.db.Exec("CREATE TABLE IF NOT EXISTS known_users (username VARCHAR(64) PRIMARY KEY, certificate BLOB NOT NULL, conversation INTEGER REFERENCES conversations(id))")
+	_, err := c.db.Exec("CREATE TABLE IF NOT EXISTS known_users (username VARCHAR(64) PRIMARY KEY, certificate BLOB NOT NULL, encr_shared_key BLOB)")
 	if err != nil {
 		return err
 	}
@@ -119,7 +119,7 @@ func (c *ChatClient) requestUserKeyIfNotKnown(username string) error {
 	return c.Send(common.NewKeyRequest(username))
 }
 
-func (c *ChatClient) saveUserToKnown(username string, certificate []byte) error {
+func (c *ChatClient) saveUserToKnown(username string, certificate []byte, sendRequest bool) error {
 	_, err := c.db.Exec("INSERT INTO known_users (username, certificate) VALUES (?, ?)", username, certificate)
 	if err != nil {
 		if err.Error() == "UNIQUE constraint failed: known_users.username" {
@@ -133,11 +133,39 @@ func (c *ChatClient) saveUserToKnown(username string, certificate []byte) error 
 		return err
 	}
 
+	if !sendRequest {
+		return nil
+	}
+
 	msg, err := common.NewConversationRequest(c.username, c.cert.PrivateKey.(*rsa.PrivateKey), username, recipientCert.PublicKey.(*rsa.PublicKey))
 	if err != nil {
 		return err
 	}
 	return c.Send(msg)
+}
+
+func (c *ChatClient) handleConversationRequest(request *common.ConversationRequest) error {
+	if err := c.saveUserToKnown(request.From, request.KeyFrom, false); err != nil {
+		return err
+	}
+
+	msg, err := common.NewConversationAccept(c.cert.PrivateKey.(*rsa.PrivateKey), request)
+	if err != nil {
+		return err
+	}
+
+	err = c.Send(msg)
+	if err != nil {
+		return err
+	}
+
+	sharedKey, err := request.GetSharedKey(c.cert.PrivateKey.(*rsa.PrivateKey))
+	if err != nil {
+		return err
+	}
+
+	_, err = c.db.Exec("UPDATE known_users SET encr_shared_key = ? WHERE username = ?", sharedKey, request.From)
+	return err
 }
 
 func (c *ChatClient) handleMsg(msg *common.Msg) error {
@@ -157,7 +185,13 @@ func (c *ChatClient) handleMsg(msg *common.Msg) error {
 		if err != nil {
 			return err
 		}
-		return c.saveUserToKnown(msgKeyResponse.Username, msgKeyResponse.Certificate)
+		return c.saveUserToKnown(msgKeyResponse.Username, msgKeyResponse.Certificate, true)
+	case common.MsgTypeConversationRequest:
+		conversationRequest, err := common.UnpackFromMsg[common.ConversationRequest](msg)
+		if err != nil {
+			return err
+		}
+		return c.handleConversationRequest(conversationRequest)
 	default:
 		return fmt.Errorf("unknown msg type: %v", msg)
 	}

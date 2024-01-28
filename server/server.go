@@ -110,16 +110,14 @@ func (s *ChatServer) unregisterConn(username string) {
 	delete(s.connections, username)
 }
 
-func (s *ChatServer) notify(username string) error {
+func (s *ChatServer) notify(username string) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	log.Printf("Notifying %s", username)
-	if _, ok := s.connections[username]; !ok {
-		return fmt.Errorf("user %s is not connected", username)
+	if _, ok := s.connections[username]; ok {
+		log.Printf("Notifying %s", username)
+		s.connections[username] <- struct{}{}
 	}
-	s.connections[username] <- struct{}{}
-	return nil
 }
 
 func (s *ChatServer) notifyAll() {
@@ -132,6 +130,11 @@ func (s *ChatServer) notifyAll() {
 	}
 }
 
-func (s *ChatServer) requestConversation(request *common.ConversationRequest) error {
+func (s *ChatServer) handleConversationRequest(request *common.ConversationRequest) error {
+	_, err := s.db.Exec("INSERT INTO requests (sender, recipient, p, g, sender_encr_result) VALUES (?, ?, ?, ?, ?)", request.From, request.To, request.P, request.G, request.Result)
+	if err != nil {
+		return err
+	}
+	s.notify(request.To)
 	return nil
 }

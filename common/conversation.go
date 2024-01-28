@@ -3,15 +3,17 @@ package common
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
 	"math/big"
 )
 
 type ConversationRequest struct {
-	From   string `json:"from"`
-	To     string `json:"to"`
-	P      []byte `json:"p"`
-	G      []byte `json:"g"`
-	Result []byte `json:"result"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+	P       []byte `json:"p"`
+	G       []byte `json:"g"`
+	Result  []byte `json:"result"`
+	KeyFrom []byte `json:"key_from"`
 }
 
 const primeBitSize = 2048
@@ -52,35 +54,38 @@ func NewConversationRequest(fromUsername string, keyFrom *rsa.PrivateKey, toUser
 	return &Msg{
 		Type: MsgTypeConversationRequest,
 		Data: &ConversationRequest{
-			From:   fromUsername,
-			To:     toUsername,
-			P:      p.Bytes(),
-			G:      g.Bytes(),
-			Result: encryptedResult,
+			From:    fromUsername,
+			To:      toUsername,
+			P:       p.Bytes(),
+			G:       g.Bytes(),
+			Result:  encryptedResult,
+			KeyFrom: keyFrom.PublicKey.N.Bytes(),
 		},
 	}, nil
 }
 
-func (r *ConversationRequest) GetSharedKey(acceptorKey *rsa.PrivateKey) (*rsa.PrivateKey, error) {
+func ConversationRequestFromDb(fromUsername string, toUsername string, p []byte, g []byte, result []byte, keyFrom []byte) *ConversationRequest {
+	return &ConversationRequest{
+		From:    fromUsername,
+		To:      toUsername,
+		P:       p,
+		G:       g,
+		Result:  result,
+		KeyFrom: keyFrom,
+	}
+}
+
+func (r *ConversationRequest) GetSharedKey(acceptorKey *rsa.PrivateKey) ([]byte, error) {
 	partialResult, err := RsaDecrypt(acceptorKey, r.Result)
 	if err != nil {
 		return nil, err
 	}
 
-	result := calcFinalResult(
+	return calcFinalResult(
 		new(big.Int).SetBytes(partialResult),
 		new(big.Int).SetBytes(r.P),
 		acceptorKey.N.Bytes(),
-	)
-
-	return &rsa.PrivateKey{
-		PublicKey: rsa.PublicKey{
-			N: acceptorKey.N,
-			E: acceptorKey.E,
-		},
-		D: result,
-	}, nil
-
+	).Bytes(), nil
 }
 
 type ConversationAccept struct {
@@ -89,10 +94,16 @@ type ConversationAccept struct {
 	Result []byte `json:"result"`
 }
 
-func NewConversationAccept(keyRequestor *rsa.PublicKey, keyAcceptor *rsa.PrivateKey, request *ConversationRequest) (*Msg, error) {
+func NewConversationAccept(keyAcceptor *rsa.PrivateKey, request *ConversationRequest) (*Msg, error) {
+	senderCert, err := x509.ParseCertificate(request.KeyFrom)
+	if err != nil {
+		return nil, err
+	}
+
 	p := new(big.Int).SetBytes(request.P)
 	g := new(big.Int).SetBytes(request.G)
-	result, err := RsaEncrypt(keyRequestor, calcPartialResult(g, p, keyAcceptor.N.Bytes()).Bytes())
+
+	result, err := RsaEncrypt(senderCert.PublicKey.(*rsa.PublicKey), calcPartialResult(g, p, keyAcceptor.N.Bytes()).Bytes())
 	if err != nil {
 		return nil, err
 	}
