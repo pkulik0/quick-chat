@@ -8,15 +8,16 @@ import (
 type MsgType uint8
 
 const (
-	MsgTypeAuth                MsgType = 0
-	MsgTypeSystem              MsgType = 1
-	MsgTypePublic              MsgType = 2
-	MsgTypePrivate             MsgType = 3
-	MsgTypeListUsers           MsgType = 4
-	MsgTypeConversationRequest MsgType = 5
-	MsgTypeConversationAccept  MsgType = 6
-	MsgTypeKeyRequest          MsgType = 7
-	MsgTypeKeyResponse         MsgType = 8
+	MsgTypeAuth         MsgType = 0
+	MsgTypeSystem       MsgType = 1
+	MsgTypePublic       MsgType = 2
+	MsgTypePrivate      MsgType = 3
+	MsgTypeListUsers    MsgType = 4
+	MsgTypePrivRequest  MsgType = 5
+	MsgTypePrivResponse MsgType = 6
+	MsgTypePrivFinalize MsgType = 7
+	MsgTypeCertRequest  MsgType = 8
+	MsgTypeCertResponse MsgType = 9
 )
 
 type Msg struct {

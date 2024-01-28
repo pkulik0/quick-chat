@@ -36,7 +36,7 @@ func (s *ChatServer) InitDb() error {
 		return err
 	}
 
-	_, err = s.db.Exec("CREATE TABLE IF NOT EXISTS requests (id INTEGER PRIMARY KEY, sender VARCHAR(64) NOT NULL REFERENCES users(username), recipient VARCHAR(64) NOT NULL REFERENCES users(username), p BLOB NOT NULL, g BLOB NOT NULL, sender_encr_result BLOB NOT NULL, recipient_encr_result BLOB, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+	_, err = s.db.Exec("CREATE TABLE IF NOT EXISTS requests (id INTEGER PRIMARY KEY, sender VARCHAR(64) NOT NULL REFERENCES users(username), recipient VARCHAR(64) NOT NULL REFERENCES users(username), p BLOB NOT NULL, g BLOB NOT NULL, sender_encr_result BLOB NOT NULL, recipient_encr_result BLOB, is_finalized BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
 	if err != nil {
 		return err
 	}
@@ -130,11 +130,25 @@ func (s *ChatServer) notifyAll() {
 	}
 }
 
-func (s *ChatServer) handleConversationRequest(request *common.ConversationRequest) error {
-	_, err := s.db.Exec("INSERT INTO requests (sender, recipient, p, g, sender_encr_result) VALUES (?, ?, ?, ?, ?)", request.From, request.To, request.P, request.G, request.Result)
+func (s *ChatServer) handlePrivRequest(request *common.PrivRequest) error {
+	_, err := s.db.Exec("INSERT INTO requests (sender, recipient, p, g, sender_encr_result) VALUES (?, ?, ?, ?, ?)", request.Sender, request.Recipient, request.P, request.G, request.Result)
 	if err != nil {
 		return err
 	}
-	s.notify(request.To)
+	s.notify(request.Recipient)
 	return nil
+}
+
+func (s *ChatServer) handlePrivResponse(accept *common.PrivResponse) error {
+	_, err := s.db.Exec("UPDATE requests SET recipient_encr_result = ? WHERE sender = ? AND recipient = ?", accept.Result, accept.Recipient, accept.Sender)
+	if err != nil {
+		return err
+	}
+	s.notify(accept.Recipient)
+	return nil
+}
+
+func (s *ChatServer) handlePrivFinalize(sender string, recipient string) error {
+	_, err := s.db.Exec("UPDATE requests SET is_finalized = TRUE WHERE sender = ? AND recipient = ?", sender, recipient)
+	return err
 }

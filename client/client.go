@@ -39,6 +39,7 @@ func (c *ChatClient) InitDb() error {
 }
 
 func (c *ChatClient) Send(msg *common.Msg) error {
+	log.Infof("Sending msg: %v", msg)
 	jsonBytes, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -100,7 +101,7 @@ func (c *ChatClient) StartReceiver() {
 	}
 }
 
-func (c *ChatClient) requestUserKeyIfNotKnown(username string) error {
+func (c *ChatClient) requestUserCertIfNotKnown(username string) error {
 	if username == c.username {
 		return nil
 	}
@@ -115,8 +116,8 @@ func (c *ChatClient) requestUserKeyIfNotKnown(username string) error {
 		return row.Scan(&certificate)
 	}
 
-	log.Infof("requesting public key for %s", username)
-	return c.Send(common.NewKeyRequest(username))
+	log.Infof("requesting cert for %s", username)
+	return c.Send(common.NewCertRequest(username))
 }
 
 func (c *ChatClient) saveUserToKnown(username string, certificate []byte, sendRequest bool) error {
@@ -137,19 +138,29 @@ func (c *ChatClient) saveUserToKnown(username string, certificate []byte, sendRe
 		return nil
 	}
 
-	msg, err := common.NewConversationRequest(c.username, c.cert.PrivateKey.(*rsa.PrivateKey), username, recipientCert.PublicKey.(*rsa.PublicKey))
+	msg, err := common.NewPrivRequest(c.username, c.cert.PrivateKey.(*rsa.PrivateKey), username, recipientCert.PublicKey.(*rsa.PublicKey))
 	if err != nil {
 		return err
 	}
 	return c.Send(msg)
 }
 
-func (c *ChatClient) handleConversationRequest(request *common.ConversationRequest) error {
-	if err := c.saveUserToKnown(request.From, request.KeyFrom, false); err != nil {
+func (c *ChatClient) saveSharedKey(sharedKey []byte, username string) error {
+	//encryptedSharedKey, err := common.RsaEncrypt(c.cert.Leaf.PublicKey.(*rsa.PublicKey), sharedKey)
+	//if err != nil {
+	//	return err
+	//}
+
+	_, err := c.db.Exec("UPDATE known_users SET encr_shared_key = ? WHERE username = ?", sharedKey, username)
+	return err
+}
+
+func (c *ChatClient) handlePrivRequest(request *common.PrivRequest) error {
+	if err := c.saveUserToKnown(request.Sender, request.SenderCert, false); err != nil {
 		return err
 	}
 
-	msg, err := common.NewConversationAccept(c.cert.PrivateKey.(*rsa.PrivateKey), request)
+	msg, err := common.NewPrivResponse(c.cert.PrivateKey.(*rsa.PrivateKey), request)
 	if err != nil {
 		return err
 	}
@@ -163,9 +174,24 @@ func (c *ChatClient) handleConversationRequest(request *common.ConversationReque
 	if err != nil {
 		return err
 	}
+	return c.saveSharedKey(sharedKey, request.Sender)
+}
 
-	_, err = c.db.Exec("UPDATE known_users SET encr_shared_key = ? WHERE username = ?", sharedKey, request.From)
-	return err
+func (c *ChatClient) handlePrivResponse(accept *common.PrivResponse) error {
+	sharedKey, err := accept.GetSharedKey(c.cert.PrivateKey.(*rsa.PrivateKey))
+	if err != nil {
+		return err
+	}
+
+	err = c.saveSharedKey(sharedKey, accept.Sender)
+	if err != nil {
+		return err
+	}
+
+	return c.Send(&common.Msg{
+		Type: common.MsgTypePrivFinalize,
+		Data: accept.Sender,
+	})
 }
 
 func (c *ChatClient) handleMsg(msg *common.Msg) error {
@@ -179,25 +205,28 @@ func (c *ChatClient) handleMsg(msg *common.Msg) error {
 			return err
 		}
 		log.Infof("[%s] %s: %s", msgPublic.Timestamp, msgPublic.Author, msgPublic.Text)
-		return c.requestUserKeyIfNotKnown(msgPublic.Author)
-	case common.MsgTypeKeyResponse:
-		msgKeyResponse, err := common.UnpackFromMsg[common.KeyResponse](msg)
+		return c.requestUserCertIfNotKnown(msgPublic.Author)
+	case common.MsgTypeCertResponse:
+		msgKeyResponse, err := common.UnpackFromMsg[common.CertResponse](msg)
 		if err != nil {
 			return err
 		}
 		return c.saveUserToKnown(msgKeyResponse.Username, msgKeyResponse.Certificate, true)
-	case common.MsgTypeConversationRequest:
-		conversationRequest, err := common.UnpackFromMsg[common.ConversationRequest](msg)
+	case common.MsgTypePrivRequest:
+		privRequest, err := common.UnpackFromMsg[common.PrivRequest](msg)
+		log.Infof("Got priv request %s -> %s", privRequest.Sender, privRequest.Recipient)
 		if err != nil {
 			return err
 		}
-		return c.handleConversationRequest(conversationRequest)
+		return c.handlePrivRequest(privRequest)
+	case common.MsgTypePrivResponse:
+		privResponse, err := common.UnpackFromMsg[common.PrivResponse](msg)
+		log.Infof("Got priv response %s -> %s", privResponse.Sender, privResponse.Recipient)
+		if err != nil {
+			return err
+		}
+		return c.handlePrivResponse(privResponse)
 	default:
 		return fmt.Errorf("unknown msg type: %v", msg)
 	}
-}
-
-func (c *ChatClient) SendText(text string) error {
-	msg := common.NewMsg(common.MsgTypePublic, text)
-	return c.Send(msg)
 }

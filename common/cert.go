@@ -79,3 +79,25 @@ func LoadCert(certPath string, keyPath string) (tlsCert tls.Certificate, err err
 	}
 	return cert, nil
 }
+
+func NewCertRequest(username string) *Msg {
+	return &Msg{
+		Type: MsgTypeCertRequest,
+		Data: username,
+	}
+}
+
+type CertResponse struct {
+	Username    string `json:"username"`
+	Certificate []byte `json:"certificate"`
+}
+
+func NewCertResponse(username string, certificate []byte) *Msg {
+	return &Msg{
+		Type: MsgTypeCertResponse,
+		Data: &CertResponse{
+			Username:    username,
+			Certificate: certificate,
+		},
+	}
+}

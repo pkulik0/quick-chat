@@ -165,8 +165,8 @@ func (u *Conn) requestPublicKeyFor(username string) error {
 	}
 
 	return u.Send(&common.Msg{
-		Type: common.MsgTypeKeyResponse,
-		Data: &common.KeyResponse{
+		Type: common.MsgTypeCertResponse,
+		Data: &common.CertResponse{
 			Username:    username,
 			Certificate: certBytes,
 		},
@@ -190,29 +190,36 @@ func (u *Conn) handleMessage(msg *common.Msg) error {
 			Type: common.MsgTypeSystem,
 			Data: fmt.Sprintf("Users online: %s", users),
 		})
-	case common.MsgTypeKeyRequest:
+	case common.MsgTypeCertRequest:
 		username, ok := msg.Data.(string)
 		if !ok {
 			return errors.New("invalid username")
 		}
 		log.Infof("Got key request: %s -> %s", u.username, username)
 		return u.requestPublicKeyFor(username)
-	case common.MsgTypeConversationRequest:
-		request, err := common.UnpackFromMsg[common.ConversationRequest](msg)
+	case common.MsgTypePrivRequest:
+		request, err := common.UnpackFromMsg[common.PrivRequest](msg)
 		if err != nil {
-			log.Errorf("failed to get conversation request: %s", err)
+			log.Errorf("failed to get priv request: %s", err)
 			return errors.New("invalid msg")
 		}
-		log.Infof("Got conversation request: %s -> %s", request.From, request.To)
-		return u.server.handleConversationRequest(request)
-	case common.MsgTypeConversationAccept:
-		accept, err := common.UnpackFromMsg[common.ConversationAccept](msg)
+		log.Infof("Got priv request: %s -> %s", request.Sender, request.Recipient)
+		return u.server.handlePrivRequest(request)
+	case common.MsgTypePrivResponse:
+		accept, err := common.UnpackFromMsg[common.PrivResponse](msg)
 		if err != nil {
-			log.Errorf("failed to get conversation accept: %s", err)
+			log.Errorf("failed to get priv response: %s", err)
 			return errors.New("invalid msg")
 		}
-		log.Infof("Got conversation accept: %s -> %s", accept.From, accept.To)
-		return nil
+		log.Infof("Got priv response: %s -> %s", accept.Sender, accept.Recipient)
+		return u.server.handlePrivResponse(accept)
+	case common.MsgTypePrivFinalize:
+		recipient, ok := msg.Data.(string)
+		if !ok {
+			return errors.New("invalid username")
+		}
+		log.Infof("Got priv finalize: %s -> %s", u.username, recipient)
+		return u.server.handlePrivFinalize(u.username, recipient)
 	default:
 		return errors.New("invalid msg type")
 	}
@@ -250,26 +257,38 @@ func (u *Conn) RunSendWorker() {
 			}
 		}
 
-		rows, err = u.server.db.Query("SELECT sender, p, g, sender_encr_result, certificate FROM requests JOIN users ON users.username = requests.sender WHERE recipient = ? AND recipient_encr_result IS NULL", u.username)
+		rows, err = u.server.db.Query("SELECT sender, recipient, certificate, p, g, sender_encr_result, recipient_encr_result FROM requests JOIN users ON users.username = sender WHERE (recipient = ? AND recipient_encr_result IS NULL) OR (is_finalized = FALSE AND sender = ?)", u.username, u.username)
 		if err != nil {
 			log.Errorf("failed to query conversation requests: %s", err)
 			continue
 		}
 		for rows.Next() {
 			var sender string
+			var recipient string
+			var senderCertBytes []byte
 			var p []byte
 			var g []byte
 			var senderEncrResult []byte
-			var senderCertBytes []byte
-			err = rows.Scan(&sender, &p, &g, &senderEncrResult, &senderCertBytes)
+			var recipientEncrResult []byte
+			err = rows.Scan(&sender, &recipient, &senderCertBytes, &p, &g, &senderEncrResult, &recipientEncrResult)
 			if err != nil {
 				log.Errorf("failed to scan conversation request: %s", err)
 				continue
 			}
-			msgs = append(msgs, &common.Msg{
-				Type: common.MsgTypeConversationRequest,
-				Data: common.ConversationRequestFromDb(sender, u.username, p, g, senderEncrResult, senderCertBytes),
-			})
+
+			if sender != u.username && recipientEncrResult == nil {
+				log.Infof("send priv request: %s -> %s", sender, recipient)
+				msgs = append(msgs, &common.Msg{
+					Type: common.MsgTypePrivRequest,
+					Data: common.PrivRequestFromDb(sender, recipient, p, g, senderEncrResult, senderCertBytes),
+				})
+			} else if sender == u.username && recipientEncrResult != nil {
+				log.Infof("send priv response: %s -> %s", recipient, sender)
+				msgs = append(msgs, &common.Msg{
+					Type: common.MsgTypePrivResponse,
+					Data: common.PrivResponseFromDb(recipient, sender, recipientEncrResult, p),
+				})
+			}
 		}
 
 		for _, msg := range msgs {
