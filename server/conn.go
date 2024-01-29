@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/pkulik0/secure-chat/common"
+	"github.com/pkulik0/quick-chat/common"
 	log "github.com/sirupsen/logrus"
 	"net"
 	"slices"

@@ -4,13 +4,13 @@ import (
 	"database/sql"
 	"flag"
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/pkulik0/secure-chat/common"
+	"github.com/pkulik0/quick-chat/common"
 	log "github.com/sirupsen/logrus"
 )
 
 func main() {
 	log.SetLevel(log.DebugLevel)
-	log.Infof("secure-chat server started")
+	log.Infof("Quick Chat server started")
 
 	addr := flag.String("addr", ":30500", "address to serve on")
 	flag.Parse()
@@ -25,7 +25,7 @@ func main() {
 	}
 	defer db.Close()
 
-	server := NewChatServer(common.LoadCert("server"), db)
+	server := NewChatServer(common.LoadCert(""), db)
 
 	if err := server.InitDb(); err != nil {
 		log.Fatalf("failed to initialize db: %s", err)

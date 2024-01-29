@@ -5,13 +5,13 @@ import (
 	"database/sql"
 	"flag"
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/pkulik0/secure-chat/common"
+	"github.com/pkulik0/quick-chat/common"
 	log "github.com/sirupsen/logrus"
 )
 
 func main() {
 	log.SetLevel(log.DebugLevel)
-	log.Infof("secure-chat client started")
+	log.Infof("Quick Chat client started")
 
 	addr := flag.String("addr", "", "server address")
 	username := flag.String("username", "", "username")

@@ -14,11 +14,8 @@ const (
 	MsgTypePublic       MsgType = 2
 	MsgTypePrivate      MsgType = 3
 	MsgTypeListUsers    MsgType = 4
-	MsgTypePrivRequest  MsgType = 5
-	MsgTypePrivResponse MsgType = 6
-	MsgTypePrivFinalize MsgType = 7
-	MsgTypeCertRequest  MsgType = 8
-	MsgTypeCertResponse MsgType = 9
+	MsgTypeCertRequest  MsgType = 5
+	MsgTypeCertResponse MsgType = 6
 )
 
 type Msg struct {

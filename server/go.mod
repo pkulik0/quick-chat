@@ -1,4 +1,4 @@
-module github.com/pkulik0/secure-chat/server
+module github.com/pkulik0/quick-chat/server
 
 go 1.21
 
