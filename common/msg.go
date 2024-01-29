@@ -2,6 +2,7 @@ package common
 
 import (
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 )
 
@@ -83,13 +84,13 @@ type MsgPrivate struct {
 	Recipient string `json:"recipient"`
 }
 
-func NewMsgPrivate(author string, keyAuthor *rsa.PrivateKey, recipient string, conversationKey *rsa.PublicKey, text string) (*Msg, error) {
-	signature, err := RsaSign(keyAuthor, []byte(text))
+func NewMsgPrivate(author string, keyAuthor *rsa.PrivateKey, recipient string, recipientKey *rsa.PublicKey, text string) (*Msg, error) {
+	encryptedText, err := RsaEncrypt(recipientKey, []byte(text))
 	if err != nil {
 		return nil, err
 	}
 
-	encryptedText, err := RsaEncrypt(conversationKey, []byte(text))
+	signature, err := RsaSign(keyAuthor, encryptedText)
 	if err != nil {
 		return nil, err
 	}
@@ -99,10 +100,25 @@ func NewMsgPrivate(author string, keyAuthor *rsa.PrivateKey, recipient string, c
 		Data: &MsgPrivate{
 			MsgPublic: MsgPublic{
 				Author:    author,
-				Text:      string(encryptedText),
+				Text:      base64.StdEncoding.EncodeToString(encryptedText),
 				Signature: signature,
 			},
 			Recipient: recipient,
 		},
 	}, nil
+}
+
+func MsgPrivateFromDb(author string, signature []byte, recipient string, text string, timestamp string) *Msg {
+	return &Msg{
+		Type: MsgTypePrivate,
+		Data: &MsgPrivate{
+			MsgPublic: MsgPublic{
+				Author:    author,
+				Text:      text,
+				Signature: signature,
+				Timestamp: timestamp,
+			},
+			Recipient: recipient,
+		},
+	}
 }

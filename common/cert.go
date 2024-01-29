@@ -7,6 +7,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
+	log "github.com/sirupsen/logrus"
 	"math/big"
 	"os"
 	"time"
@@ -72,12 +74,24 @@ func GenerateCert(commonName string, keyPath string, certPath string) error {
 	return nil
 }
 
-func LoadCert(certPath string, keyPath string) (tlsCert tls.Certificate, err error) {
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil {
-		return tlsCert, err
+func LoadCert(suffix string) *tls.Certificate {
+	if err := os.Mkdir("keys", 0700); err != nil && !os.IsExist(err) {
+		log.Fatalf("failed to create keys directory: %s", err)
 	}
-	return cert, nil
+	certFile := fmt.Sprintf("keys/cert_%s.pem", suffix)
+	keyFile := fmt.Sprintf("keys/key_%s.pem", suffix)
+	if _, err := os.Stat(certFile); os.IsNotExist(err) {
+		log.Infof("no key/cert found, generating new ones")
+		if err := GenerateCert(suffix, keyFile, certFile); err != nil {
+			log.Fatalf("failed to generate cert: %s", err)
+		}
+	}
+
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		log.Fatalf("failed to load cert: %s", err)
+	}
+	return &cert
 }
 
 func NewCertRequest(username string) *Msg {

@@ -1,15 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/pkulik0/secure-chat/common"
 	log "github.com/sirupsen/logrus"
+	"os"
+	"strings"
 )
 
 type ChatClient struct {
@@ -30,7 +34,7 @@ func NewChatClient(conn *tls.Conn, cert *tls.Certificate, db *sql.DB, username s
 }
 
 func (c *ChatClient) InitDb() error {
-	_, err := c.db.Exec("CREATE TABLE IF NOT EXISTS known_users (username VARCHAR(64) PRIMARY KEY, certificate BLOB NOT NULL, encr_shared_key BLOB)")
+	_, err := c.db.Exec("CREATE TABLE IF NOT EXISTS known_users (username VARCHAR(64) PRIMARY KEY, certificate BLOB NOT NULL)")
 	if err != nil {
 		return err
 	}
@@ -39,7 +43,6 @@ func (c *ChatClient) InitDb() error {
 }
 
 func (c *ChatClient) Send(msg *common.Msg) error {
-	log.Infof("Sending msg: %v", msg)
 	jsonBytes, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -66,7 +69,7 @@ func (c *ChatClient) Connect() error {
 
 func (c *ChatClient) StartReceiver() {
 	for {
-		sizeBuf := make([]byte, 32)
+		sizeBuf := make([]byte, 10)
 		_, err := c.conn.Read(sizeBuf)
 		if err != nil {
 			log.Errorf("failed to read from %s: %s", c.conn.RemoteAddr(), err)
@@ -116,11 +119,10 @@ func (c *ChatClient) requestUserCertIfNotKnown(username string) error {
 		return row.Scan(&certificate)
 	}
 
-	log.Infof("requesting cert for %s", username)
 	return c.Send(common.NewCertRequest(username))
 }
 
-func (c *ChatClient) saveUserToKnown(username string, certificate []byte, sendRequest bool) error {
+func (c *ChatClient) saveUserToKnown(username string, certificate []byte) error {
 	_, err := c.db.Exec("INSERT INTO known_users (username, certificate) VALUES (?, ?)", username, certificate)
 	if err != nil {
 		if err.Error() == "UNIQUE constraint failed: known_users.username" {
@@ -128,70 +130,7 @@ func (c *ChatClient) saveUserToKnown(username string, certificate []byte, sendRe
 		}
 		return err
 	}
-
-	recipientCert, err := x509.ParseCertificate(certificate)
-	if err != nil {
-		return err
-	}
-
-	if !sendRequest {
-		return nil
-	}
-
-	msg, err := common.NewPrivRequest(c.username, c.cert.PrivateKey.(*rsa.PrivateKey), username, recipientCert.PublicKey.(*rsa.PublicKey))
-	if err != nil {
-		return err
-	}
-	return c.Send(msg)
-}
-
-func (c *ChatClient) saveSharedKey(sharedKey []byte, username string) error {
-	//encryptedSharedKey, err := common.RsaEncrypt(c.cert.Leaf.PublicKey.(*rsa.PublicKey), sharedKey)
-	//if err != nil {
-	//	return err
-	//}
-
-	_, err := c.db.Exec("UPDATE known_users SET encr_shared_key = ? WHERE username = ?", sharedKey, username)
-	return err
-}
-
-func (c *ChatClient) handlePrivRequest(request *common.PrivRequest) error {
-	if err := c.saveUserToKnown(request.Sender, request.SenderCert, false); err != nil {
-		return err
-	}
-
-	msg, err := common.NewPrivResponse(c.cert.PrivateKey.(*rsa.PrivateKey), request)
-	if err != nil {
-		return err
-	}
-
-	err = c.Send(msg)
-	if err != nil {
-		return err
-	}
-
-	sharedKey, err := request.GetSharedKey(c.cert.PrivateKey.(*rsa.PrivateKey))
-	if err != nil {
-		return err
-	}
-	return c.saveSharedKey(sharedKey, request.Sender)
-}
-
-func (c *ChatClient) handlePrivResponse(accept *common.PrivResponse) error {
-	sharedKey, err := accept.GetSharedKey(c.cert.PrivateKey.(*rsa.PrivateKey))
-	if err != nil {
-		return err
-	}
-
-	err = c.saveSharedKey(sharedKey, accept.Sender)
-	if err != nil {
-		return err
-	}
-
-	return c.Send(&common.Msg{
-		Type: common.MsgTypePrivFinalize,
-		Data: accept.Sender,
-	})
+	return nil
 }
 
 func (c *ChatClient) handleMsg(msg *common.Msg) error {
@@ -211,22 +150,96 @@ func (c *ChatClient) handleMsg(msg *common.Msg) error {
 		if err != nil {
 			return err
 		}
-		return c.saveUserToKnown(msgKeyResponse.Username, msgKeyResponse.Certificate, true)
-	case common.MsgTypePrivRequest:
-		privRequest, err := common.UnpackFromMsg[common.PrivRequest](msg)
-		log.Infof("Got priv request %s -> %s", privRequest.Sender, privRequest.Recipient)
+		return c.saveUserToKnown(msgKeyResponse.Username, msgKeyResponse.Certificate)
+	case common.MsgTypePrivate:
+		msgPrivate, err := common.UnpackFromMsg[common.MsgPrivate](msg)
 		if err != nil {
 			return err
 		}
-		return c.handlePrivRequest(privRequest)
-	case common.MsgTypePrivResponse:
-		privResponse, err := common.UnpackFromMsg[common.PrivResponse](msg)
-		log.Infof("Got priv response %s -> %s", privResponse.Sender, privResponse.Recipient)
+		encryptedText, err := base64.StdEncoding.DecodeString(msgPrivate.Text)
 		if err != nil {
 			return err
 		}
-		return c.handlePrivResponse(privResponse)
+		decryptedText, err := common.RsaDecrypt(c.cert.PrivateKey.(*rsa.PrivateKey), encryptedText)
+		if err != nil {
+			return err
+		}
+		log.Infof("[PRIV] [%s] %s: %s", msgPrivate.Timestamp, msgPrivate.Author, decryptedText)
+		return nil
 	default:
 		return fmt.Errorf("unknown msg type: %v", msg)
 	}
+}
+
+func (c *ChatClient) startInputLoop() {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			log.Fatalf("failed to read input: %s", err)
+		}
+		input = input[:len(input)-1]
+
+		if input == "/list" {
+			msg := common.NewMsg(common.MsgTypeListUsers, nil)
+			err := c.Send(msg)
+			if err != nil {
+				log.Errorf("failed to send message: %s", err)
+			}
+			continue
+		}
+		if strings.HasPrefix(input, "/priv") {
+			err := c.inputPrivMsg(input)
+			if err != nil {
+				log.Errorf("failed to send message: %s", err)
+			}
+			continue
+		}
+
+		pubMsg, err := common.NewMsgPublic(c.username, input, c.cert.PrivateKey.(*rsa.PrivateKey))
+		if err != nil {
+			log.Errorf("failed to create msg: %s", err)
+		}
+		err = c.Send(pubMsg)
+		if err != nil {
+			log.Errorf("failed to send message: %s", err)
+		}
+	}
+}
+
+func (c *ChatClient) inputPrivMsg(input string) error {
+	parts := strings.Split(input, " ")
+	if len(parts) < 3 {
+		return errors.New("invalid input")
+	}
+	recipient := parts[1]
+	text := strings.Join(parts[2:], " ")
+
+	if recipient == c.username {
+		return errors.New("cannot send private message to yourself")
+	}
+
+	row, err := c.db.Query("SELECT certificate FROM known_users WHERE username = ? LIMIT 1", recipient)
+	if err != nil {
+		return errors.New("database error")
+	}
+	defer row.Close()
+
+	var certBytes []byte
+	if !row.Next() {
+		return errors.New("user not found")
+	}
+	err = row.Scan(&certBytes)
+
+	cert, err := x509.ParseCertificate(certBytes)
+	if err != nil {
+		return errors.New("invalid cert")
+	}
+
+	msg, err := common.NewMsgPrivate(c.username, c.cert.PrivateKey.(*rsa.PrivateKey), recipient, cert.PublicKey.(*rsa.PublicKey), text)
+	if err != nil {
+		return errors.New("failed to create msg")
+	}
+
+	return c.Send(msg)
 }

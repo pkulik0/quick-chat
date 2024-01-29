@@ -1,20 +1,17 @@
 package main
 
 import (
-	"bufio"
-	"crypto/rsa"
 	"crypto/tls"
 	"database/sql"
 	"flag"
-	"fmt"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/pkulik0/secure-chat/common"
 	log "github.com/sirupsen/logrus"
-	"os"
 )
 
 func main() {
 	log.SetLevel(log.DebugLevel)
+	log.Infof("secure-chat client started")
 
 	addr := flag.String("addr", "", "server address")
 	username := flag.String("username", "", "username")
@@ -26,31 +23,6 @@ func main() {
 		log.Fatalf("must specify username")
 	}
 
-	if err := os.Mkdir("keys", 0700); err != nil && !os.IsExist(err) {
-		log.Fatalf("failed to create keys directory: %s", err)
-	}
-	certFile := fmt.Sprintf("keys/cert_%s.pem", *username)
-	keyFile := fmt.Sprintf("keys/key_%s.pem", *username)
-	if _, err := os.Stat(certFile); os.IsNotExist(err) {
-		log.Infof("no key/cert found, generating new ones")
-		if err := common.GenerateCert(*username, keyFile, certFile); err != nil {
-			log.Fatalf("failed to generate cert: %s", err)
-		}
-	}
-
-	cert, err := common.LoadCert(certFile, keyFile)
-	if err != nil {
-		log.Fatalf("failed to load cert: %s", err)
-	}
-
-	conn, err := tls.Dial("tcp", *addr, &tls.Config{
-		InsecureSkipVerify: true,
-	})
-	if err != nil {
-		log.Fatalf("failed to connect to %s: %s", *addr, err)
-	}
-	defer conn.Close()
-
 	db, err := sql.Open("sqlite3", "file:client.db?cache?shared")
 	if err != nil {
 		log.Fatalf("failed to open db: %s", err)
@@ -61,7 +33,15 @@ func main() {
 	}
 	defer db.Close()
 
-	client := NewChatClient(conn, &cert, db, *username)
+	conn, err := tls.Dial("tcp", *addr, &tls.Config{
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		log.Fatalf("failed to connect to %s: %s", *addr, err)
+	}
+	defer conn.Close()
+
+	client := NewChatClient(conn, common.LoadCert(*username), db, *username)
 	if err := client.InitDb(); err != nil {
 		log.Fatalf("failed to initialize db: %s", err)
 	}
@@ -71,31 +51,5 @@ func main() {
 		log.Fatalf("failed to connect: %s", err)
 	}
 
-	reader := bufio.NewReader(os.Stdin)
-	for {
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			log.Fatalf("failed to read input: %s", err)
-		}
-		input = input[:len(input)-1]
-
-		log.Debugf("input: '%v'", input)
-		if input == "/list" {
-			msg := common.NewMsg(common.MsgTypeListUsers, nil)
-			err := client.Send(msg)
-			if err != nil {
-				log.Fatalf("failed to send message: %s", err)
-			}
-			continue
-		}
-
-		pubMsg, err := common.NewMsgPublic(client.username, input, client.cert.PrivateKey.(*rsa.PrivateKey))
-		if err != nil {
-			log.Fatalf("failed to create msg: %s", err)
-		}
-		err = client.Send(pubMsg)
-		if err != nil {
-			log.Fatalf("failed to send message: %s", err)
-		}
-	}
+	client.startInputLoop()
 }

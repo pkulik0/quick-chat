@@ -127,17 +127,40 @@ func (u *Conn) handleAuth(data interface{}) error {
 
 func (u *Conn) handlePublic(msgPublic *common.MsgPublic) error {
 	if err := common.RsaVerify(u.cert.PublicKey.(*rsa.PublicKey), msgPublic.Signature, []byte(msgPublic.Text)); err != nil {
-		log.Errorf("failed to verify msg: %s", err)
+		log.Errorf("failed to verify msg sig: %s", err)
 		return errors.New("invalid signature")
 	}
 
-	_, err := u.server.db.Exec("INSERT INTO msgs (author, signature, text) VALUES (?, ?, ?)", msgPublic.Author, msgPublic.Signature, msgPublic.Text)
+	_, err := u.server.db.Exec("INSERT INTO msgs (sender, signature, text) VALUES (?, ?, ?)", msgPublic.Author, msgPublic.Signature, msgPublic.Text)
 	if err != nil {
 		log.Errorf("failed to insert public msg: %s", err)
 		return errors.New("internal error")
 	}
 
 	go u.server.notifyAll()
+
+	return nil
+}
+
+func (u *Conn) handlePrivate(msgPrivate *common.MsgPrivate) error {
+	encryptedText, err := base64.StdEncoding.DecodeString(msgPrivate.Text)
+	if err != nil {
+		log.Errorf("failed to decode encrypted text: %s", err)
+		return errors.New("invalid encrypted text")
+	}
+
+	if err := common.RsaVerify(u.cert.PublicKey.(*rsa.PublicKey), msgPrivate.Signature, encryptedText); err != nil {
+		log.Errorf("failed to verify msg sig: %s", err)
+		return errors.New("invalid signature")
+	}
+
+	_, err = u.server.db.Exec("INSERT INTO msgs (sender, signature, recipient, text) VALUES (?, ?, ?, ?)", msgPrivate.Author, msgPrivate.Signature, msgPrivate.Recipient, msgPrivate.Text)
+	if err != nil {
+		log.Errorf("failed to insert public msg: %s", err)
+		return errors.New("internal error")
+	}
+
+	u.server.notify(msgPrivate.Recipient)
 
 	return nil
 }
@@ -197,29 +220,14 @@ func (u *Conn) handleMessage(msg *common.Msg) error {
 		}
 		log.Infof("Got key request: %s -> %s", u.username, username)
 		return u.requestPublicKeyFor(username)
-	case common.MsgTypePrivRequest:
-		request, err := common.UnpackFromMsg[common.PrivRequest](msg)
+	case common.MsgTypePrivate:
+		msgPrivate, err := common.UnpackFromMsg[common.MsgPrivate](msg)
 		if err != nil {
-			log.Errorf("failed to get priv request: %s", err)
+			log.Errorf("failed to get msg private: %s", err)
 			return errors.New("invalid msg")
 		}
-		log.Infof("Got priv request: %s -> %s", request.Sender, request.Recipient)
-		return u.server.handlePrivRequest(request)
-	case common.MsgTypePrivResponse:
-		accept, err := common.UnpackFromMsg[common.PrivResponse](msg)
-		if err != nil {
-			log.Errorf("failed to get priv response: %s", err)
-			return errors.New("invalid msg")
-		}
-		log.Infof("Got priv response: %s -> %s", accept.Sender, accept.Recipient)
-		return u.server.handlePrivResponse(accept)
-	case common.MsgTypePrivFinalize:
-		recipient, ok := msg.Data.(string)
-		if !ok {
-			return errors.New("invalid username")
-		}
-		log.Infof("Got priv finalize: %s -> %s", u.username, recipient)
-		return u.server.handlePrivFinalize(u.username, recipient)
+		log.Infof("Got private msg: %s -> %s", msgPrivate.Author, msgPrivate.Recipient)
+		return u.handlePrivate(msgPrivate)
 	default:
 		return errors.New("invalid msg type")
 	}
@@ -232,72 +240,47 @@ func (u *Conn) RunSendWorker() {
 			return
 		}
 
-		rows, err := u.server.db.Query("SELECT id, author, signature, text, timestamp FROM msgs WHERE id > ? AND conversation IS NULL", u.lastSeenMsgId)
-		if err != nil {
-			log.Errorf("failed to query public msgs: %s", err)
-			continue
-		}
-
-		var msgs []*common.Msg
-		for rows.Next() {
-			var id int
-			var author string
-			var signature []byte
-			var text string
-			var timestamp string
-			err = rows.Scan(&id, &author, &signature, &text, &timestamp)
+		func() {
+			rows, err := u.server.db.Query("SELECT id, sender, signature, recipient, text, timestamp FROM msgs WHERE id > ? AND (recipient IS NULL OR recipient = ?)", u.lastSeenMsgId, u.username)
 			if err != nil {
-				log.Errorf("failed to scan public msg: %s", err)
-				continue
+				log.Errorf("failed to query public msgs: %s", err)
+				return
 			}
-			msgs = append(msgs, common.MsgPublicFromDb(author, text, signature, timestamp))
+			defer rows.Close()
 
-			if u.lastSeenMsgId < id {
-				u.lastSeenMsgId = id
-			}
-		}
+			var msgs []*common.Msg
+			for rows.Next() {
+				var id int
+				var sender string
+				var signature []byte
+				var recipient *string
+				var text string
+				var timestamp string
+				err = rows.Scan(&id, &sender, &signature, &recipient, &text, &timestamp)
+				if err != nil {
+					log.Errorf("failed to scan public msg: %s", err)
+					continue
+				}
 
-		rows, err = u.server.db.Query("SELECT sender, recipient, certificate, p, g, sender_encr_result, recipient_encr_result FROM requests JOIN users ON users.username = sender WHERE (recipient = ? AND recipient_encr_result IS NULL) OR (is_finalized = FALSE AND sender = ?)", u.username, u.username)
-		if err != nil {
-			log.Errorf("failed to query conversation requests: %s", err)
-			continue
-		}
-		for rows.Next() {
-			var sender string
-			var recipient string
-			var senderCertBytes []byte
-			var p []byte
-			var g []byte
-			var senderEncrResult []byte
-			var recipientEncrResult []byte
-			err = rows.Scan(&sender, &recipient, &senderCertBytes, &p, &g, &senderEncrResult, &recipientEncrResult)
-			if err != nil {
-				log.Errorf("failed to scan conversation request: %s", err)
-				continue
+				if recipient == nil {
+					msgs = append(msgs, common.MsgPublicFromDb(sender, text, signature, timestamp))
+				} else {
+					msgs = append(msgs, common.MsgPrivateFromDb(sender, signature, *recipient, text, timestamp))
+				}
+
+				if u.lastSeenMsgId < id {
+					u.lastSeenMsgId = id
+				}
 			}
 
-			if sender != u.username && recipientEncrResult == nil {
-				log.Infof("send priv request: %s -> %s", sender, recipient)
-				msgs = append(msgs, &common.Msg{
-					Type: common.MsgTypePrivRequest,
-					Data: common.PrivRequestFromDb(sender, recipient, p, g, senderEncrResult, senderCertBytes),
-				})
-			} else if sender == u.username && recipientEncrResult != nil {
-				log.Infof("send priv response: %s -> %s", recipient, sender)
-				msgs = append(msgs, &common.Msg{
-					Type: common.MsgTypePrivResponse,
-					Data: common.PrivResponseFromDb(recipient, sender, recipientEncrResult, p),
-				})
+			for _, msg := range msgs {
+				err = u.Send(msg)
+				if err != nil {
+					log.Errorf("failed to send msg: %s", err)
+					continue
+				}
 			}
-		}
-
-		for _, msg := range msgs {
-			err = u.Send(msg)
-			if err != nil {
-				log.Errorf("failed to send public msg: %s", err)
-				continue
-			}
-		}
+		}()
 	}
 }
 
@@ -305,7 +288,7 @@ func (u *Conn) RunRecvWorker() {
 	defer u.Close()
 
 	for {
-		sizeBuf := make([]byte, 32)
+		sizeBuf := make([]byte, 10)
 		_, err := u.conn.Read(sizeBuf)
 		if err != nil {
 			log.Errorf("failed to read from %s: %s", u.conn.RemoteAddr(), err)
